@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>보험 진단 문구 생성기</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f8f9fb;
+      --surface: #ffffff;
+      --surface-2: #f4f6f8;
+      --text: #191f28;
+      --muted: #6b7684;
+      --line: #e5e8eb;
+      --primary: #3182f6;
+      --primary-dark: #1b64da;
+      --neon: #b9ecff;
+      --ok: #008c54;
+      --shadow: 0 10px 24px rgba(25, 31, 40, 0.06);
+      --hover-shadow: 0 14px 34px rgba(49, 130, 246, 0.1), 0 0 18px rgba(185, 236, 255, 0.22);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Pretendard", "Inter", "Noto Sans KR", "Apple SD Gothic Neo", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 34px 0 44px;
+    }
+
+    h1 {
+      margin: 0 0 20px;
+      font-size: clamp(25px, 3.5vw, 35px);
+      line-height: 1.22;
+      letter-spacing: 0;
+      font-weight: 800;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel,
+    .result-panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+      animation: floatPanel 5.5s ease-in-out infinite;
+      transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease, background 180ms ease;
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .panel + .panel {
+      margin-top: 10px;
+    }
+
+    .panel:nth-of-type(2) {
+      animation-delay: -1.1s;
+    }
+
+    .panel:nth-of-type(3) {
+      animation-delay: -2.2s;
+    }
+
+    .panel:hover,
+    .result-panel:hover {
+      animation: none;
+      border-color: rgba(185, 236, 255, 0.72);
+      background: var(--surface);
+      box-shadow: var(--hover-shadow);
+      transform: translateY(-3px);
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 13px;
+      font-size: 17px;
+      line-height: 1.35;
+      letter-spacing: 0;
+      font-weight: 800;
+    }
+
+    .sub-title {
+      margin: 16px 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .choices {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 7px;
+    }
+
+    .choice input {
+      position: absolute;
+      inline-size: 1px;
+      block-size: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .choice span {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 40px;
+      padding: 9px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: var(--surface-2);
+      color: #333d4b;
+      font-size: 14px;
+      font-weight: 750;
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+
+    .choice span::before {
+      content: "";
+      width: 17px;
+      height: 17px;
+      border: 2px solid #b0b8c1;
+      border-radius: 4px;
+      background: #fff;
+      flex: 0 0 auto;
+    }
+
+    .choice span:hover {
+      background: #eef1f4;
+    }
+
+    .choice input:checked + span {
+      border-color: var(--primary);
+      background: #eef6ff;
+      color: #1b64da;
+    }
+
+    .choice input:checked + span::before {
+      border-color: var(--primary);
+      background:
+        linear-gradient(135deg, transparent 0 45%, #fff 45% 55%, transparent 55%),
+        linear-gradient(45deg, transparent 0 53%, #fff 53% 63%, transparent 63%),
+        var(--primary);
+    }
+
+    .result-panel {
+      padding: 16px;
+      position: sticky;
+      top: 20px;
+    }
+
+    .result-block + .result-block {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .result-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .result-header h2 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.35;
+      letter-spacing: 0;
+      font-weight: 800;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 108px;
+      padding: 12px 13px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfd;
+      color: var(--text);
+      font: 14px/1.62 "Pretendard", "Inter", "Noto Sans KR", "Apple SD Gothic Neo", Arial, sans-serif;
+      letter-spacing: 0;
+      transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+    }
+
+    #cancerDiagnosisText,
+    #surgeryText,
+    #allText {
+      min-height: 180px;
+    }
+
+    @keyframes floatPanel {
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-3px);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .panel,
+      .result-panel {
+        animation: none;
+      }
+    }
+
+    textarea:focus,
+    .choice input:focus-visible + span,
+    button:focus-visible {
+      outline: 3px solid rgba(49, 130, 246, 0.18);
+      outline-offset: 2px;
+    }
+
+    textarea:focus {
+      border-color: var(--primary);
+      background: #fff;
+      box-shadow: 0 0 0 4px rgba(49, 130, 246, 0.08);
+    }
+
+    button {
+      min-height: 34px;
+      padding: 8px 13px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: background 140ms ease, transform 140ms ease;
+      white-space: nowrap;
+    }
+
+    button:hover {
+      background: var(--primary-dark);
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    .copy-all {
+      width: 100%;
+      margin-top: 12px;
+    }
+
+    .status {
+      min-height: 22px;
+      margin-top: 12px;
+      color: var(--ok);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .empty {
+      color: #8b95a1;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        width: min(100% - 24px, 1180px);
+        padding: 20px 0 30px;
+      }
+
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .result-panel {
+        position: static;
+      }
+
+      .panel,
+      .result-panel {
+        padding: 15px;
+      }
+
+      .choices {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>보험 진단 문구 생성기</h1>
+
+    <div class="layout">
+      <div>
+        <section class="panel" aria-labelledby="priority-one-title">
+          <h2 id="priority-one-title" class="section-title">1순위 실비</h2>
+          <div class="choices" role="radiogroup" aria-labelledby="priority-one-title">
+            <label class="choice">
+              <input type="radio" name="actualExpense" value="yes">
+              <span>있음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="actualExpense" value="no">
+              <span>없음</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="priority-two-title">
+          <h2 id="priority-two-title" class="section-title">2순위 암/뇌/심장 진단비</h2>
+          <div class="sub-title">&lt;암진단비&gt;</div>
+          <div class="choices" role="radiogroup" aria-label="암진단비 선택">
+            <label class="choice">
+              <input type="radio" name="cancerDiagnosis" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="cancerDiagnosis" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="cancerDiagnosis" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+
+          <div class="sub-title">&lt;뇌혈관&gt;</div>
+          <div class="choices" role="radiogroup" aria-label="뇌혈관 선택">
+            <label class="choice">
+              <input type="radio" name="cerebrovascular" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="cerebrovascular" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="cerebrovascular" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+
+          <div class="sub-title">&lt;허혈성심장&gt;</div>
+          <div class="choices" role="radiogroup" aria-label="허혈성심장 선택">
+            <label class="choice">
+              <input type="radio" name="ischemicHeart" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="ischemicHeart" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="ischemicHeart" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="priority-three-title">
+          <h2 id="priority-three-title" class="section-title">3순위 수술비</h2>
+
+          <div class="sub-title">항목 : 상해 종수술비</div>
+          <div class="choices" role="radiogroup" aria-label="상해 종수술비 선택">
+            <label class="choice">
+              <input type="radio" name="injuryTypeSurgery" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="injuryTypeSurgery" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="injuryTypeSurgery" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+
+          <div class="sub-title">항목 : 질병 종수술비</div>
+          <div class="choices" role="radiogroup" aria-label="질병 종수술비 선택">
+            <label class="choice">
+              <input type="radio" name="diseaseTypeSurgery" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="diseaseTypeSurgery" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="diseaseTypeSurgery" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+
+          <div class="sub-title">항목 : 상해 수술비</div>
+          <div class="choices" role="radiogroup" aria-label="상해 수술비 선택">
+            <label class="choice">
+              <input type="radio" name="injurySurgery" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="injurySurgery" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="injurySurgery" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+
+          <div class="sub-title">항목 : 질병 수술비</div>
+          <div class="choices" role="radiogroup" aria-label="질병 수술비 선택">
+            <label class="choice">
+              <input type="radio" name="diseaseSurgery" value="none">
+              <span>없음</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="diseaseSurgery" value="low">
+              <span>부족</span>
+            </label>
+            <label class="choice">
+              <input type="radio" name="diseaseSurgery" value="enough">
+              <span>충분</span>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <aside class="result-panel" aria-label="생성된 문구">
+        <div class="result-block">
+          <div class="result-header">
+            <h2>1순위 결과</h2>
+            <button type="button" data-copy="actualExpenseText">복사</button>
+          </div>
+          <textarea id="actualExpenseText" class="empty" spellcheck="false">1순위 실비를 선택하면 문구가 표시됩니다.</textarea>
+        </div>
+
+        <div class="result-block">
+          <div class="result-header">
+            <h2>2순위 결과</h2>
+            <button type="button" data-copy="cancerDiagnosisText">복사</button>
+          </div>
+          <textarea id="cancerDiagnosisText" class="empty" spellcheck="false">2순위 항목을 선택하면 문구가 표시됩니다.</textarea>
+        </div>
+
+        <div class="result-block">
+          <div class="result-header">
+            <h2>3순위 결과</h2>
+            <button type="button" data-copy="surgeryText">복사</button>
+          </div>
+          <textarea id="surgeryText" class="empty" spellcheck="false">3순위 수술비 항목을 선택하면 문구가 표시됩니다.</textarea>
+        </div>
+
+        <div class="result-block">
+          <div class="result-header">
+            <h2>정리 문구</h2>
+          </div>
+          <textarea id="allText" class="empty" spellcheck="false">보강이 필요한 항목이 정리되어 표시됩니다.</textarea>
+          <button type="button" class="copy-all" data-copy="allText">전체 복사</button>
+        </div>
+
+        <div id="status" class="status" aria-live="polite"></div>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const messages = {
+      actualExpense: {
+        yes: "🟢1순위인 실비는🟢\n교보생명에 가입되어있어 따로 건드실 필요는 없습니다.",
+        no: "🔴1순위인 실비는🔴\n보유하고 있지 않기 때문에 보강하셔야 합니다."
+      },
+      cancerDiagnosis: {
+        none: "🔴2순위인 암/뇌/심장 진단비에서🔴\n암진단비는 보유하고 있지않아 보강하셔야 합니다.",
+        low: "🔴2순위인 암/뇌/심장 진단비에서🔴\n암진단비는 업계에서 권장하는 금액에 비해 부족하게 가입되어 보강하셔야 합니다.",
+        enough: "🟢2순위인 암/뇌/심장 진단비에서🟢\n암진단비는 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
+      },
+      cerebrovascular: {
+        none: "뇌혈관 진단비는 보유하고 있지않아 보강하셔야 합니다.",
+        low: "뇌혈관 진단비는 업계에서 권장하는 금액에 비해 부족하게 가입되어 보강하셔야 합니다.",
+        enough: "뇌혈관 진단비는 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
+      },
+      ischemicHeart: {
+        none: "허혈성심장 진단비는 보유하고 있지않아 보강하셔야 합니다.",
+        low: "허혈성심장 진단비는 업계에서 권장하는 금액에 비해 부족하게 가입되어 보강하셔야 합니다.",
+        enough: "허혈성심장 진단비는 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
+      },
+      vascularCombined: {
+        none: "보장범위가 넓어 소비자에게 유리한 뇌혈관/허혈성심장 진단비는 보유하고 있지 않아 보강하셔야 합니다.",
+        low: "보장범위가 넓어 소비자에게 유리한 뇌혈관/허혈성심장 진단비는 업계에서 권장하는 금액에 비해 부족하게 가입되어있어 보강하셔야 합니다.",
+        enough: "보장범위가 넓어 소비자에게 유리한 뇌혈관/허혈성심장 진단비는 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
+      }
+    };
+
+    const actualExpenseText = document.getElementById("actualExpenseText");
+    const cancerDiagnosisText = document.getElementById("cancerDiagnosisText");
+    const surgeryText = document.getElementById("surgeryText");
+    const allText = document.getElementById("allText");
+    const status = document.getElementById("status");
+
+    const placeholders = {
+      actualExpenseText: "1순위 실비를 선택하면 문구가 표시됩니다.",
+      cancerDiagnosisText: "2순위 항목을 선택하면 문구가 표시됩니다.",
+      surgeryText: "3순위 수술비 항목을 선택하면 문구가 표시됩니다.",
+      allText: "보강이 필요한 항목이 정리되어 표시됩니다."
+    };
+
+    const priorityTwoItems = {
+      cancerDiagnosis: "암진단비",
+      cerebrovascular: "뇌혈관 진단비",
+      ischemicHeart: "허혈성심장 진단비"
+    };
+
+    const surgeryItems = {
+      injuryTypeSurgery: "상해 종수술비",
+      diseaseTypeSurgery: "질병 종수술비",
+      injurySurgery: "상해 수술비",
+      diseaseSurgery: "질병 수술비"
+    };
+
+    const priorityTwoState = {
+      cancerDiagnosis: "",
+      cerebrovascular: "",
+      ischemicHeart: ""
+    };
+
+    const priorityTwoChoice = {
+      cancerDiagnosis: "",
+      cerebrovascular: "",
+      ischemicHeart: ""
+    };
+
+    let actualExpenseChoice = "";
+
+    const surgeryState = {
+      injuryTypeSurgery: "",
+      diseaseTypeSurgery: "",
+      injurySurgery: "",
+      diseaseSurgery: ""
+    };
+
+    function setText(textarea, value) {
+      textarea.value = value;
+      textarea.classList.remove("empty");
+      updateAllText();
+    }
+
+    function usableValue(textarea) {
+      return textarea.classList.contains("empty") ? "" : textarea.value.trim();
+    }
+
+    function updateAllText() {
+      const reinforcementChoices = ["none", "low"];
+      const priorityTwoNeeds = Object.entries(priorityTwoChoice)
+        .filter(([, choice]) => reinforcementChoices.includes(choice))
+        .map(([name]) => priorityTwoItems[name]);
+      const surgeryNeeds = Object.entries(surgeryState)
+        .filter(([, choice]) => reinforcementChoices.includes(choice))
+        .map(([name]) => surgeryItems[name]);
+      const clauses = [];
+
+      if (actualExpenseChoice === "no") {
+        clauses.push("1순위에서 실비를");
+      }
+
+      if (priorityTwoNeeds.length > 0) {
+        clauses.push(`2순위에서 ${priorityTwoNeeds.join(", ")}를`);
+      }
+
+      if (surgeryNeeds.length > 0) {
+        clauses.push(`3순위에서 ${surgeryNeeds.join(", ")}를`);
+      }
+
+      if (clauses.length === 0) {
+        allText.value = placeholders.allText;
+        allText.classList.add("empty");
+        return;
+      }
+
+      const summaryLines = clauses.map((clause, index) => {
+        const isLast = index === clauses.length - 1;
+        return `${clause} ${isLast ? "보강하셔야 합니다." : "보강하셔야 하시고,"}`;
+      });
+
+      allText.value = [
+        "정리해서 말씀드리면",
+        "",
+        ...summaryLines,
+        "",
+        "부족한 부분을 보강하는 플랜으로 대략적인 금액 안내드려볼까요??"
+      ].join("\n");
+      allText.classList.remove("empty");
+    }
+
+    function updatePriorityTwoText() {
+      const sections = [];
+
+      if (priorityTwoState.cancerDiagnosis) {
+        sections.push(priorityTwoState.cancerDiagnosis);
+      }
+
+      if (
+        priorityTwoChoice.cerebrovascular &&
+        priorityTwoChoice.cerebrovascular === priorityTwoChoice.ischemicHeart
+      ) {
+        const combinedText = messages.vascularCombined[priorityTwoChoice.cerebrovascular];
+        const allPriorityTwoChoicesMatch =
+          priorityTwoChoice.cancerDiagnosis &&
+          priorityTwoChoice.cancerDiagnosis === priorityTwoChoice.cerebrovascular &&
+          priorityTwoChoice.cancerDiagnosis === priorityTwoChoice.ischemicHeart;
+        const reinforcementChoices = ["none", "low"];
+        const allReinforcementChoices =
+          reinforcementChoices.includes(priorityTwoChoice.cancerDiagnosis) &&
+          reinforcementChoices.includes(priorityTwoChoice.cerebrovascular);
+        const shouldAddFollowupPrefix = allPriorityTwoChoicesMatch || allReinforcementChoices;
+
+        sections.push(shouldAddFollowupPrefix ? `덧붙여 ${combinedText}` : combinedText);
+      } else {
+        const vascularTexts = [
+          priorityTwoState.cerebrovascular,
+          priorityTwoState.ischemicHeart
+        ].filter(Boolean);
+
+        if (vascularTexts.length > 0) {
+          sections.push(["보장범위가 넓어 소비자에게 유리한", ...vascularTexts].join("\n"));
+        }
+      }
+
+      if (sections.length === 0) {
+        cancerDiagnosisText.value = placeholders.cancerDiagnosisText;
+        cancerDiagnosisText.classList.add("empty");
+      } else {
+        cancerDiagnosisText.value = sections.join("\n\n");
+        cancerDiagnosisText.classList.remove("empty");
+      }
+
+      updateAllText();
+    }
+
+    function buildSurgerySentence(items, choice) {
+      const names = items.join(", ");
+      const endings = {
+        none: "는 보유하고 있지않아 보강하셔야 합니다.",
+        low: "는 업계에서 권장하는 금액에 비해 부족하게 가입되어 보강하셔야 합니다.",
+        enough: "는 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
+      };
+
+      return `${names}${endings[choice]}`;
+    }
+
+    function updateSurgeryText() {
+      const groups = {
+        none: [],
+        low: [],
+        enough: []
+      };
+
+      Object.entries(surgeryState).forEach(([name, choice]) => {
+        if (choice) {
+          groups[choice].push(surgeryItems[name]);
+        }
+      });
+
+      const sections = ["none", "low", "enough"]
+        .filter((choice) => groups[choice].length > 0)
+        .map((choice) => buildSurgerySentence(groups[choice], choice));
+
+      if (sections.length === 0) {
+        surgeryText.value = placeholders.surgeryText;
+        surgeryText.classList.add("empty");
+      } else {
+        const selectedChoices = Object.values(surgeryState).filter(Boolean);
+        const allSurgeryChoicesEnough =
+          selectedChoices.length === Object.keys(surgeryItems).length &&
+          selectedChoices.every((choice) => choice === "enough");
+        const header = allSurgeryChoicesEnough
+          ? "🟢3순위인 수술비에서🟢"
+          : "🔴3순위인 수술비에서🔴";
+
+        surgeryText.value = `${header}\n${sections.join("\n\n")}`;
+        surgeryText.classList.remove("empty");
+      }
+
+      updateAllText();
+    }
+
+    function flashStatus(text) {
+      status.textContent = text;
+      window.clearTimeout(flashStatus.timer);
+      flashStatus.timer = window.setTimeout(() => {
+        status.textContent = "";
+      }, 1600);
+    }
+
+    async function copyText(textarea) {
+      const value = usableValue(textarea);
+      if (!value) {
+        flashStatus("복사할 문구가 없습니다.");
+        return;
+      }
+
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+
+      try {
+        await navigator.clipboard.writeText(textarea.value);
+        flashStatus("복사되었습니다.");
+      } catch {
+        document.execCommand("copy");
+        flashStatus("복사되었습니다.");
+      }
+    }
+
+    document.querySelectorAll('input[name="actualExpense"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        actualExpenseChoice = input.value;
+        setText(actualExpenseText, messages.actualExpense[input.value]);
+      });
+    });
+
+    document.querySelectorAll('input[name="cancerDiagnosis"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        priorityTwoChoice.cancerDiagnosis = input.value;
+        priorityTwoState.cancerDiagnosis = messages.cancerDiagnosis[input.value];
+        updatePriorityTwoText();
+      });
+    });
+
+    document.querySelectorAll('input[name="cerebrovascular"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        priorityTwoChoice.cerebrovascular = input.value;
+        priorityTwoState.cerebrovascular = messages.cerebrovascular[input.value];
+        updatePriorityTwoText();
+      });
+    });
+
+    document.querySelectorAll('input[name="ischemicHeart"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        priorityTwoChoice.ischemicHeart = input.value;
+        priorityTwoState.ischemicHeart = messages.ischemicHeart[input.value];
+        updatePriorityTwoText();
+      });
+    });
+
+    Object.keys(surgeryItems).forEach((name) => {
+      document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+        input.addEventListener("change", () => {
+          surgeryState[name] = input.value;
+          updateSurgeryText();
+        });
+      });
+    });
+
+    [actualExpenseText, cancerDiagnosisText, surgeryText].forEach((textarea) => {
+      textarea.addEventListener("input", () => {
+        textarea.classList.toggle("empty", textarea.value.trim() === "");
+        updateAllText();
+      });
+    });
+
+    allText.addEventListener("input", () => {
+      allText.classList.toggle("empty", allText.value.trim() === "");
+    });
+
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", () => {
+        copyText(document.getElementById(button.dataset.copy));
+      });
+    });
+  </script>
+</body>
+</html>
