@@ -706,8 +706,15 @@
           const allReinforcementChoices =
             reinforcementChoices.includes(priorityTwoChoice.cancerDiagnosis) &&
             reinforcementChoices.includes(priorityTwoChoice.cerebrovascular);
+          const cancerEnoughVascularNeedsReinforcement =
+            priorityTwoChoice.cancerDiagnosis === "enough" &&
+            reinforcementChoices.includes(priorityTwoChoice.cerebrovascular);
 
-          sections.push(allReinforcementChoices ? `덧붙여 ${combinedText}` : combinedText);
+          if (cancerEnoughVascularNeedsReinforcement) {
+            sections.push(`하지만 ${combinedText}`);
+          } else {
+            sections.push(allReinforcementChoices ? `덧붙여 ${combinedText}` : combinedText);
+          }
         } else {
           const vascularTexts = [
             priorityTwoState.cerebrovascular,
@@ -715,7 +722,16 @@
           ].filter(Boolean);
 
           if (vascularTexts.length > 0) {
-            sections.push(["보장범위가 넓어 소비자에게 유리한", ...vascularTexts].join("\n"));
+            const reinforcementChoices = ["none", "low"];
+            const cancerEnoughVascularNeedsReinforcement =
+              priorityTwoChoice.cancerDiagnosis === "enough" &&
+              [priorityTwoChoice.cerebrovascular, priorityTwoChoice.ischemicHeart]
+                .some((choice) => reinforcementChoices.includes(choice));
+            const vascularPrefix = cancerEnoughVascularNeedsReinforcement
+              ? "하지만 보장범위가 넓어 소비자에게 유리한"
+              : "보장범위가 넓어 소비자에게 유리한";
+
+            sections.push([vascularPrefix, ...vascularTexts].join("\n"));
           }
         }
       }
