@@ -515,6 +515,11 @@
         none: "보장범위가 넓어 소비자에게 유리한 뇌혈관/허혈성심장 진단비는 보유하고 있지 않아 보강하셔야 합니다.",
         low: "보장범위가 넓어 소비자에게 유리한 뇌혈관/허혈성심장 진단비는 업계에서 권장하는 금액에 비해 부족하게 가입되어있어 보강하셔야 합니다.",
         enough: "보장범위가 넓어 소비자에게 유리한 뇌혈관/허혈성심장 진단비는 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
+      },
+      priorityTwoCombined: {
+        none: "🔴2순위인 암/뇌/심장 진단비에서🔴\n암/뇌/심장 진단비 모두 보유하고 있지않아 보강하셔야 합니다.",
+        low: "🔴2순위인 암/뇌/심장 진단비에서🔴\n암/뇌/심장 진단비 모두 업계에서 권장하는 금액에 비해 부족하게 가입되어 보강하셔야 합니다.",
+        enough: "🟢2순위인 암/뇌/심장 진단비에서🟢\n암/뇌/심장 진단비 모두 업계에서 권장하는 금액에 알맞게 가입되어있어 따로 건드실 필요는 없습니다."
       }
     };
 
@@ -575,14 +580,61 @@
       return textarea.classList.contains("empty") ? "" : textarea.value.trim();
     }
 
+    function getMatchingPriorityTwoChoice() {
+      const choices = Object.values(priorityTwoChoice);
+      return choices.every(Boolean) && choices.every((choice) => choice === choices[0])
+        ? choices[0]
+        : "";
+    }
+
+    function buildSurgeryGroups(allowedChoices = ["none", "low", "enough"]) {
+      const groups = {
+        none: [],
+        low: [],
+        enough: []
+      };
+      const addItem = (name) => {
+        const choice = surgeryState[name];
+        if (choice && allowedChoices.includes(choice)) {
+          groups[choice].push(surgeryItems[name]);
+        }
+      };
+
+      if (
+        surgeryState.injuryTypeSurgery &&
+        surgeryState.injuryTypeSurgery === surgeryState.diseaseTypeSurgery &&
+        allowedChoices.includes(surgeryState.injuryTypeSurgery)
+      ) {
+        groups[surgeryState.injuryTypeSurgery].push("종수술비");
+      } else {
+        addItem("injuryTypeSurgery");
+        addItem("diseaseTypeSurgery");
+      }
+
+      if (
+        surgeryState.injurySurgery &&
+        surgeryState.injurySurgery === surgeryState.diseaseSurgery &&
+        allowedChoices.includes(surgeryState.injurySurgery)
+      ) {
+        groups[surgeryState.injurySurgery].push("상해·질병수술비");
+      } else {
+        addItem("injurySurgery");
+        addItem("diseaseSurgery");
+      }
+
+      return groups;
+    }
+
     function updateAllText() {
       const reinforcementChoices = ["none", "low"];
-      const priorityTwoNeeds = Object.entries(priorityTwoChoice)
-        .filter(([, choice]) => reinforcementChoices.includes(choice))
-        .map(([name]) => priorityTwoItems[name]);
-      const surgeryNeeds = Object.entries(surgeryState)
-        .filter(([, choice]) => reinforcementChoices.includes(choice))
-        .map(([name]) => surgeryItems[name]);
+      const matchingPriorityTwoChoice = getMatchingPriorityTwoChoice();
+      const priorityTwoNeeds = reinforcementChoices.includes(matchingPriorityTwoChoice)
+        ? ["암/뇌/심장 진단비"]
+        : Object.entries(priorityTwoChoice)
+          .filter(([, choice]) => reinforcementChoices.includes(choice))
+          .map(([name]) => priorityTwoItems[name]);
+      const surgeryGroups = buildSurgeryGroups(reinforcementChoices);
+      const surgeryNeeds = [...surgeryGroups.none, ...surgeryGroups.low];
       const clauses = [];
 
       if (actualExpenseChoice === "no") {
@@ -620,35 +672,35 @@
 
     function updatePriorityTwoText() {
       const sections = [];
+      const matchingPriorityTwoChoice = getMatchingPriorityTwoChoice();
 
-      if (priorityTwoState.cancerDiagnosis) {
-        sections.push(priorityTwoState.cancerDiagnosis);
-      }
-
-      if (
-        priorityTwoChoice.cerebrovascular &&
-        priorityTwoChoice.cerebrovascular === priorityTwoChoice.ischemicHeart
-      ) {
-        const combinedText = messages.vascularCombined[priorityTwoChoice.cerebrovascular];
-        const allPriorityTwoChoicesMatch =
-          priorityTwoChoice.cancerDiagnosis &&
-          priorityTwoChoice.cancerDiagnosis === priorityTwoChoice.cerebrovascular &&
-          priorityTwoChoice.cancerDiagnosis === priorityTwoChoice.ischemicHeart;
-        const reinforcementChoices = ["none", "low"];
-        const allReinforcementChoices =
-          reinforcementChoices.includes(priorityTwoChoice.cancerDiagnosis) &&
-          reinforcementChoices.includes(priorityTwoChoice.cerebrovascular);
-        const shouldAddFollowupPrefix = allPriorityTwoChoicesMatch || allReinforcementChoices;
-
-        sections.push(shouldAddFollowupPrefix ? `덧붙여 ${combinedText}` : combinedText);
+      if (matchingPriorityTwoChoice) {
+        sections.push(messages.priorityTwoCombined[matchingPriorityTwoChoice]);
       } else {
-        const vascularTexts = [
-          priorityTwoState.cerebrovascular,
-          priorityTwoState.ischemicHeart
-        ].filter(Boolean);
+        if (priorityTwoState.cancerDiagnosis) {
+          sections.push(priorityTwoState.cancerDiagnosis);
+        }
 
-        if (vascularTexts.length > 0) {
-          sections.push(["보장범위가 넓어 소비자에게 유리한", ...vascularTexts].join("\n"));
+        if (
+          priorityTwoChoice.cerebrovascular &&
+          priorityTwoChoice.cerebrovascular === priorityTwoChoice.ischemicHeart
+        ) {
+          const combinedText = messages.vascularCombined[priorityTwoChoice.cerebrovascular];
+          const reinforcementChoices = ["none", "low"];
+          const allReinforcementChoices =
+            reinforcementChoices.includes(priorityTwoChoice.cancerDiagnosis) &&
+            reinforcementChoices.includes(priorityTwoChoice.cerebrovascular);
+
+          sections.push(allReinforcementChoices ? `덧붙여 ${combinedText}` : combinedText);
+        } else {
+          const vascularTexts = [
+            priorityTwoState.cerebrovascular,
+            priorityTwoState.ischemicHeart
+          ].filter(Boolean);
+
+          if (vascularTexts.length > 0) {
+            sections.push(["보장범위가 넓어 소비자에게 유리한", ...vascularTexts].join("\n"));
+          }
         }
       }
 
@@ -675,17 +727,7 @@
     }
 
     function updateSurgeryText() {
-      const groups = {
-        none: [],
-        low: [],
-        enough: []
-      };
-
-      Object.entries(surgeryState).forEach(([name, choice]) => {
-        if (choice) {
-          groups[choice].push(surgeryItems[name]);
-        }
-      });
+      const groups = buildSurgeryGroups();
 
       const sections = ["none", "low", "enough"]
         .filter((choice) => groups[choice].length > 0)
