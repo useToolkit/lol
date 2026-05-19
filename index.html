@@ -587,7 +587,7 @@
         : "";
     }
 
-    function buildSurgeryGroups(allowedChoices = ["none", "low", "enough"]) {
+    function buildSurgeryGroups(allowedChoices = ["none", "low", "enough"], mergeReinforcementRange = false) {
       const groups = {
         none: [],
         low: [],
@@ -606,6 +606,12 @@
         allowedChoices.includes(surgeryState.injuryTypeSurgery)
       ) {
         groups[surgeryState.injuryTypeSurgery].push("종수술비");
+      } else if (
+        mergeReinforcementRange &&
+        allowedChoices.includes(surgeryState.injuryTypeSurgery) &&
+        allowedChoices.includes(surgeryState.diseaseTypeSurgery)
+      ) {
+        groups[surgeryState.injuryTypeSurgery].push("종수술비");
       } else {
         addItem("injuryTypeSurgery");
         addItem("diseaseTypeSurgery");
@@ -615,6 +621,12 @@
         surgeryState.injurySurgery &&
         surgeryState.injurySurgery === surgeryState.diseaseSurgery &&
         allowedChoices.includes(surgeryState.injurySurgery)
+      ) {
+        groups[surgeryState.injurySurgery].push("상해·질병수술비");
+      } else if (
+        mergeReinforcementRange &&
+        allowedChoices.includes(surgeryState.injurySurgery) &&
+        allowedChoices.includes(surgeryState.diseaseSurgery)
       ) {
         groups[surgeryState.injurySurgery].push("상해·질병수술비");
       } else {
@@ -628,12 +640,16 @@
     function updateAllText() {
       const reinforcementChoices = ["none", "low"];
       const matchingPriorityTwoChoice = getMatchingPriorityTwoChoice();
-      const priorityTwoNeeds = reinforcementChoices.includes(matchingPriorityTwoChoice)
+      const priorityTwoChoices = Object.values(priorityTwoChoice);
+      const allPriorityTwoNeedsReinforcement =
+        priorityTwoChoices.every(Boolean) &&
+        priorityTwoChoices.every((choice) => reinforcementChoices.includes(choice));
+      const priorityTwoNeeds = allPriorityTwoNeedsReinforcement || reinforcementChoices.includes(matchingPriorityTwoChoice)
         ? ["암/뇌/심장 진단비"]
         : Object.entries(priorityTwoChoice)
           .filter(([, choice]) => reinforcementChoices.includes(choice))
           .map(([name]) => priorityTwoItems[name]);
-      const surgeryGroups = buildSurgeryGroups(reinforcementChoices);
+      const surgeryGroups = buildSurgeryGroups(reinforcementChoices, true);
       const surgeryNeeds = [...surgeryGroups.none, ...surgeryGroups.low];
       const clauses = [];
 
