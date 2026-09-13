@@ -22,6 +22,12 @@ final class AppPrefs {
     private static final String KEY_COLLAPSED_SYMBOL = "collapsed_symbol";
     private static final String KEY_TEXT_SIZE = "overlay_text_size";
     private static final String KEY_PANEL_WIDTH = "overlay_panel_width";
+    private static final String KEY_POWER_MODE = "power_mode";
+    private static final String KEY_MOBILE_SAVER = "mobile_saver";
+
+    static final int POWER_REALTIME = 0;
+    static final int POWER_BALANCED = 1;
+    static final int POWER_ULTRA = 2;
 
     private AppPrefs() {}
 
@@ -142,6 +148,25 @@ final class AppPrefs {
 
     static void setPanelWidth(Context c, int dp) {
         prefs(c).edit().putInt(KEY_PANEL_WIDTH, clamp(dp, 220, 360)).apply();
+    }
+
+    static int getPowerMode(Context c) {
+        int mode = prefs(c).getInt(KEY_POWER_MODE, POWER_BALANCED);
+        if (mode < POWER_REALTIME || mode > POWER_ULTRA) return POWER_BALANCED;
+        return mode;
+    }
+
+    static void setPowerMode(Context c, int mode) {
+        if (mode < POWER_REALTIME || mode > POWER_ULTRA) mode = POWER_BALANCED;
+        prefs(c).edit().putInt(KEY_POWER_MODE, mode).apply();
+    }
+
+    static boolean getMobileSaver(Context c) {
+        return prefs(c).getBoolean(KEY_MOBILE_SAVER, true);
+    }
+
+    static void setMobileSaver(Context c, boolean enabled) {
+        prefs(c).edit().putBoolean(KEY_MOBILE_SAVER, enabled).apply();
     }
 
     private static String normalize(String s) {
