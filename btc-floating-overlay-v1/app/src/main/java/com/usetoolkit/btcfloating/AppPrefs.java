@@ -19,6 +19,9 @@ final class AppPrefs {
     private static final String KEY_ALPHA = "alpha";
     private static final String KEY_INTERVAL = "interval";
     private static final String KEY_COLLAPSED = "collapsed";
+    private static final String KEY_COLLAPSED_SYMBOL = "collapsed_symbol";
+    private static final String KEY_TEXT_SIZE = "overlay_text_size";
+    private static final String KEY_PANEL_WIDTH = "overlay_panel_width";
 
     private AppPrefs() {}
 
@@ -54,38 +57,51 @@ final class AppPrefs {
             }
         }
 
-        return new ArrayList<>(Arrays.asList(
+        ArrayList<String> defaults = new ArrayList<>(Arrays.asList(
                 "BINANCE:BTCUSDT",
                 "BINANCE:ETHUSDT",
                 "BINANCE:SOLUSDT"
         ));
+        setSymbols(c, defaults);
+        return defaults;
     }
 
     static void setSymbols(Context c, List<String> symbols) {
         JSONArray a = new JSONArray();
         LinkedHashSet<String> unique = new LinkedHashSet<>();
-        for (String s : symbols) {
-            String normalized = normalize(s);
-            if (!normalized.isEmpty()) unique.add(normalized);
+        if (symbols != null) {
+            for (String s : symbols) {
+                String normalized = normalize(s);
+                if (!normalized.isEmpty()) unique.add(normalized);
+            }
         }
         for (String s : unique) a.put(s);
-        prefs(c).edit().putString(KEY_SYMBOLS, a.toString()).apply();
+
+        SharedPreferences p = prefs(c);
+        SharedPreferences.Editor e = p.edit().putString(KEY_SYMBOLS, a.toString());
+        String collapsed = normalize(p.getString(KEY_COLLAPSED_SYMBOL, ""));
+        if (!unique.contains(collapsed)) {
+            if (unique.isEmpty()) e.remove(KEY_COLLAPSED_SYMBOL);
+            else e.putString(KEY_COLLAPSED_SYMBOL, unique.iterator().next());
+        }
+        e.apply();
     }
 
     static float getAlpha(Context c) {
-        return prefs(c).getFloat(KEY_ALPHA, 0.92f);
+        return clamp(prefs(c).getFloat(KEY_ALPHA, 0.92f), 0.20f, 1.00f);
     }
 
     static void setAlpha(Context c, float alpha) {
-        prefs(c).edit().putFloat(KEY_ALPHA, alpha).apply();
+        prefs(c).edit().putFloat(KEY_ALPHA, clamp(alpha, 0.20f, 1.00f)).apply();
     }
 
     static long getInterval(Context c) {
-        return prefs(c).getLong(KEY_INTERVAL, 1000L);
+        long v = prefs(c).getLong(KEY_INTERVAL, 1000L);
+        return v == 500L || v == 3000L ? v : 1000L;
     }
 
     static void setInterval(Context c, long ms) {
-        prefs(c).edit().putLong(KEY_INTERVAL, ms).apply();
+        prefs(c).edit().putLong(KEY_INTERVAL, ms == 500L || ms == 3000L ? ms : 1000L).apply();
     }
 
     static boolean getCollapsed(Context c) {
@@ -96,11 +112,51 @@ final class AppPrefs {
         prefs(c).edit().putBoolean(KEY_COLLAPSED, collapsed).apply();
     }
 
+    static String getCollapsedSymbol(Context c) {
+        List<String> symbols = getSymbols(c);
+        if (symbols.isEmpty()) return "";
+        String saved = normalize(prefs(c).getString(KEY_COLLAPSED_SYMBOL, ""));
+        if (symbols.contains(saved)) return saved;
+        String fallback = symbols.get(0);
+        setCollapsedSymbol(c, fallback);
+        return fallback;
+    }
+
+    static void setCollapsedSymbol(Context c, String symbol) {
+        String normalized = normalize(symbol);
+        if (normalized.isEmpty()) prefs(c).edit().remove(KEY_COLLAPSED_SYMBOL).apply();
+        else prefs(c).edit().putString(KEY_COLLAPSED_SYMBOL, normalized).apply();
+    }
+
+    static int getTextSize(Context c) {
+        return clamp(prefs(c).getInt(KEY_TEXT_SIZE, 13), 11, 19);
+    }
+
+    static void setTextSize(Context c, int sp) {
+        prefs(c).edit().putInt(KEY_TEXT_SIZE, clamp(sp, 11, 19)).apply();
+    }
+
+    static int getPanelWidth(Context c) {
+        return clamp(prefs(c).getInt(KEY_PANEL_WIDTH, 280), 220, 360);
+    }
+
+    static void setPanelWidth(Context c, int dp) {
+        prefs(c).edit().putInt(KEY_PANEL_WIDTH, clamp(dp, 220, 360)).apply();
+    }
+
     private static String normalize(String s) {
         if (s == null) return "";
         String out = s.trim().toUpperCase(java.util.Locale.US);
         if (out.isEmpty()) return "";
         if (!out.contains(":")) out = "BINANCE:" + out;
         return out;
+    }
+
+    private static int clamp(int v, int min, int max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
+    private static float clamp(float v, float min, float max) {
+        return Math.max(min, Math.min(max, v));
     }
 }
