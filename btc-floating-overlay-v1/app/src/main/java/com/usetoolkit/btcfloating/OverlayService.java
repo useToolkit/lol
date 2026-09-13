@@ -40,6 +40,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     private static final String CHANNEL = "wantview_float_channel";
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Map<String, Quote> quotes = new LinkedHashMap<>();
+
     private WindowManager wm;
     private LinearLayout panel;
     private LinearLayout header;
@@ -94,11 +95,8 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         registerReceiver(screenReceiver, screenFilter);
 
         IntentFilter configFilter = new IntentFilter(ACTION_CONFIG_CHANGED);
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(configReceiver, configFilter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(configReceiver, configFilter);
-        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(configReceiver, configFilter, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(configReceiver, configFilter);
 
         market = new MarketSocket(this);
         collapsed = AppPrefs.getCollapsed(this);
@@ -120,14 +118,15 @@ public class OverlayService extends Service implements MarketSocket.Listener {
             stopSelf();
             return;
         }
+
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(8), dp(5), dp(8), dp(6));
+        setPanelPadding();
 
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(Color.rgb(10, 18, 31));
-        bg.setCornerRadius(dp(14));
+        bg.setCornerRadius(dp(13));
         bg.setStroke(dp(1), Color.rgb(43, 78, 118));
         panel.setBackground(bg);
 
@@ -140,9 +139,9 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         headerText.setTextColor(Color.WHITE);
         headerText.setTypeface(null, Typeface.BOLD);
         headerText.setSingleLine(true);
-        headerText.setEllipsize(TextUtils.TruncateAt.END);
-        headerText.setPadding(dp(1), 0, dp(5), 0);
-        header.addView(headerText, new LinearLayout.LayoutParams(0, dp(30), 1f));
+        headerText.setEllipsize(null);
+        headerText.setPadding(dp(1), 0, dp(4), 0);
+        header.addView(headerText, new LinearLayout.LayoutParams(0, dp(28), 1f));
 
         toggle = new TextView(this);
         toggle.setGravity(Gravity.CENTER);
@@ -155,14 +154,14 @@ public class OverlayService extends Service implements MarketSocket.Listener {
             applyCollapsed();
             renderQuotes();
         });
-        header.addView(toggle, new LinearLayout.LayoutParams(dp(30), dp(30)));
-        panel.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)));
+        header.addView(toggle, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        panel.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
         enableDrag(header);
 
         status = new TextView(this);
         status.setText("TradingView · 연결 중…");
         status.setTextColor(Color.rgb(156, 174, 198));
-        status.setPadding(dp(1), 0, dp(1), dp(2));
+        status.setPadding(dp(1), 0, dp(1), dp(1));
         status.setSingleLine(true);
         panel.addView(status);
 
@@ -173,6 +172,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 : WindowManager.LayoutParams.TYPE_PHONE;
+
         params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -186,13 +186,21 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         applyDisplayPrefs();
     }
 
+    private void setPanelPadding() {
+        if (panel == null) return;
+        if (collapsed) panel.setPadding(dp(6), dp(1), dp(5), dp(1));
+        else panel.setPadding(dp(8), dp(4), dp(8), dp(5));
+    }
+
     private void applyDisplayPrefs() {
         if (panel == null) return;
         int textSize = AppPrefs.getTextSize(this);
         panel.setAlpha(AppPrefs.getAlpha(this));
+        setPanelPadding();
 
-        int headerHeight = dp(Math.max(27, textSize + 16));
-        int toggleWidth = dp(Math.max(28, textSize + 18));
+        int headerHeight = dp(collapsed ? Math.max(21, textSize + 8) : Math.max(27, textSize + 15));
+        int toggleWidth = dp(collapsed ? Math.max(23, textSize + 12) : Math.max(28, textSize + 18));
+
         if (header != null) {
             LinearLayout.LayoutParams hp = (LinearLayout.LayoutParams) header.getLayoutParams();
             hp.height = headerHeight;
@@ -200,18 +208,24 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         }
         if (headerText != null) {
             headerText.setTextSize(Math.max(11, textSize));
+            headerText.setIncludeFontPadding(false);
             LinearLayout.LayoutParams htp = (LinearLayout.LayoutParams) headerText.getLayoutParams();
             htp.height = headerHeight;
             headerText.setLayoutParams(htp);
+            headerText.setGravity(Gravity.CENTER_VERTICAL);
         }
         if (toggle != null) {
-            toggle.setTextSize(Math.max(17, textSize + 6));
+            toggle.setTextSize(Math.max(16, textSize + 5));
+            toggle.setIncludeFontPadding(false);
             LinearLayout.LayoutParams tp = (LinearLayout.LayoutParams) toggle.getLayoutParams();
             tp.width = toggleWidth;
             tp.height = headerHeight;
             toggle.setLayoutParams(tp);
         }
-        if (status != null) status.setTextSize(Math.max(8, textSize - 3));
+        if (status != null) {
+            status.setTextSize(Math.max(8, textSize - 3));
+            status.setIncludeFontPadding(false);
+        }
 
         applyCollapsed();
         resizeWindow();
@@ -219,13 +233,35 @@ public class OverlayService extends Service implements MarketSocket.Listener {
 
     private void applyCollapsed() {
         if (quoteBox == null || status == null || toggle == null) return;
+        setPanelPadding();
         quoteBox.setVisibility(collapsed ? View.GONE : View.VISIBLE);
         status.setVisibility(collapsed ? View.GONE : View.VISIBLE);
         toggle.setText(collapsed ? "+" : "−");
+
         if (!collapsed && headerText != null) {
             headerText.setText("Wantview");
             headerText.setTextColor(Color.WHITE);
         }
+
+        int textSize = AppPrefs.getTextSize(this);
+        int headerHeight = dp(collapsed ? Math.max(21, textSize + 8) : Math.max(27, textSize + 15));
+        if (header != null) {
+            LinearLayout.LayoutParams hp = (LinearLayout.LayoutParams) header.getLayoutParams();
+            hp.height = headerHeight;
+            header.setLayoutParams(hp);
+        }
+        if (headerText != null) {
+            LinearLayout.LayoutParams htp = (LinearLayout.LayoutParams) headerText.getLayoutParams();
+            htp.height = headerHeight;
+            headerText.setLayoutParams(htp);
+        }
+        if (toggle != null) {
+            LinearLayout.LayoutParams tp = (LinearLayout.LayoutParams) toggle.getLayoutParams();
+            tp.width = dp(collapsed ? Math.max(23, textSize + 12) : Math.max(28, textSize + 18));
+            tp.height = headerHeight;
+            toggle.setLayoutParams(tp);
+        }
+
         resizeWindow();
     }
 
@@ -296,6 +332,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         if (panel == null || quoteBox == null) return;
         panel.setAlpha(AppPrefs.getAlpha(this));
         List<String> symbols = AppPrefs.getSymbols(this);
+
         if (collapsed) {
             renderCollapsedHeader(symbols);
             resizeWindow();
@@ -314,21 +351,24 @@ public class OverlayService extends Service implements MarketSocket.Listener {
                 LinearLayout row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setPadding(dp(1), dp(1), dp(1), dp(1));
-                int rowHeight = dp(Math.max(23, textSize + 12));
+                row.setPadding(dp(1), 0, dp(1), 0);
+                int rowHeight = dp(Math.max(22, textSize + 10));
 
                 TextView name = new TextView(this);
                 name.setText(prettySymbol(symbol));
                 name.setTextColor(Color.WHITE);
                 name.setTextSize(textSize);
+                name.setIncludeFontPadding(false);
                 name.setSingleLine(true);
                 name.setEllipsize(TextUtils.TruncateAt.END);
+                name.setGravity(Gravity.CENTER_VERTICAL);
                 name.setTypeface(null, Typeface.BOLD);
                 row.addView(name, new LinearLayout.LayoutParams(0, rowHeight, 0.41f));
 
                 TextView value = new TextView(this);
                 value.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
                 value.setTextSize(textSize);
+                value.setIncludeFontPadding(false);
                 value.setSingleLine(true);
                 value.setTypeface(null, Typeface.BOLD);
                 if (q == null) {
@@ -348,7 +388,8 @@ public class OverlayService extends Service implements MarketSocket.Listener {
             empty.setText("앱에서 종목을 추가하세요");
             empty.setTextColor(Color.LTGRAY);
             empty.setTextSize(textSize);
-            empty.setPadding(dp(1), dp(3), dp(1), dp(3));
+            empty.setIncludeFontPadding(false);
+            empty.setPadding(dp(1), dp(2), dp(1), dp(2));
             quoteBox.addView(empty);
         }
         resizeWindow();
@@ -358,6 +399,10 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         if (headerText == null) return;
         int textSize = AppPrefs.getTextSize(this);
         headerText.setTextSize(Math.max(11, textSize));
+        headerText.setIncludeFontPadding(false);
+        headerText.setSingleLine(true);
+        headerText.setEllipsize(null);
+
         if (symbols.isEmpty()) {
             headerText.setText("Wantview");
             headerText.setTextColor(Color.WHITE);
@@ -368,6 +413,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         if (representative.isEmpty() || !symbols.contains(representative)) representative = symbols.get(0);
         Quote q;
         synchronized (quotes) { q = quotes.get(representative); }
+
         if (q == null) {
             headerText.setText(prettySymbol(representative) + "  --");
             headerText.setTextColor(Color.WHITE);
@@ -381,9 +427,15 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     private void resizeWindow() {
         if (params == null || wm == null || panel == null) return;
         int desired = calculateDesiredWidth();
-        int configuredMax = dp(AppPrefs.getPanelWidth(this));
-        int minimum = dp(collapsed ? 120 : 145);
-        params.width = Math.max(minimum, Math.min(configuredMax, desired));
+        int screenMax = (int) (getResources().getDisplayMetrics().widthPixels * 0.96f);
+
+        if (collapsed) {
+            params.width = Math.min(screenMax, Math.max(dp(105), desired));
+        } else {
+            int configuredMax = dp(AppPrefs.getPanelWidth(this));
+            params.width = Math.max(dp(145), Math.min(configuredMax, desired));
+        }
+        params.height = WindowManager.LayoutParams.WRAP_CONTENT;
         try { wm.updateViewLayout(panel, params); } catch (Exception ignored) { }
     }
 
@@ -393,9 +445,9 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         main.setTypeface(Typeface.DEFAULT_BOLD);
         main.setTextSize(sp(textSize));
 
-        int toggleWidth = dp(Math.max(28, textSize + 18));
+        int toggleWidth = dp(collapsed ? Math.max(23, textSize + 12) : Math.max(28, textSize + 18));
         float max = main.measureText(collapsed && headerText != null
-                ? headerText.getText().toString() : "Wantview") + toggleWidth + dp(18);
+                ? headerText.getText().toString() : "Wantview") + toggleWidth + dp(collapsed ? 13 : 18);
 
         if (!collapsed) {
             Paint small = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -409,13 +461,10 @@ public class OverlayService extends Service implements MarketSocket.Listener {
                     Quote q = quotes.get(symbol);
                     String value = q == null ? "--" : String.format(Locale.US, "%s  %+.2f%%",
                             formatPrice(q.price), q.change);
-                    String line = prettySymbol(symbol) + "    " + value;
-                    max = Math.max(max, main.measureText(line) + dp(22));
+                    max = Math.max(max, main.measureText(prettySymbol(symbol) + "   " + value) + dp(20));
                 }
             }
-            if (symbols.isEmpty()) {
-                max = Math.max(max, main.measureText("앱에서 종목을 추가하세요") + dp(18));
-            }
+            if (symbols.isEmpty()) max = Math.max(max, main.measureText("앱에서 종목을 추가하세요") + dp(18));
         }
         return (int) Math.ceil(max);
     }
@@ -443,7 +492,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     }
 
     private Notification buildNotification() {
-        Intent i = new Intent(this, SafeMainActivity.class);
+        Intent i = new Intent(this, MainActivity.class);
         PendingIntent pi = PendingIntent.getActivity(this, 0, i,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
