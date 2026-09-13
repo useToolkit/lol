@@ -37,12 +37,15 @@ final class MarketSocket {
     private boolean manualClose;
     private int retryCount;
     private String session;
+    private int generation;
 
     MarketSocket(Listener listener) {
         this.listener = listener;
     }
 
     synchronized void connect(List<String> symbols) {
+        generation++;
+        final int gen = generation;
         closeInternal(false);
         if (symbols == null || symbols.isEmpty()) return;
         lastSymbols = new ArrayList<>(symbols);
@@ -57,6 +60,7 @@ final class MarketSocket {
         listener.onState("connecting");
         socket = client.newWebSocket(req, new WebSocketListener() {
             @Override public void onOpen(WebSocket webSocket, Response response) {
+                if (gen != generation) return;
                 retryCount = 0;
                 listener.onState("connected");
                 sendMessage("set_auth_token", new JSONArray().put("unauthorized_user_token"));
@@ -74,22 +78,26 @@ final class MarketSocket {
             }
 
             @Override public void onMessage(WebSocket webSocket, String text) {
+                if (gen != generation) return;
                 parseFrames(text);
             }
 
             @Override public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+                if (gen != generation) return;
                 listener.onState("disconnected");
-                scheduleReconnect();
+                scheduleReconnect(gen);
             }
 
             @Override public void onClosed(WebSocket webSocket, int code, String reason) {
+                if (gen != generation) return;
                 listener.onState("closed");
-                if (!manualClose) scheduleReconnect();
+                if (!manualClose) scheduleReconnect(gen);
             }
         });
     }
 
     synchronized void disconnect() {
+        generation++;
         manualClose = true;
         closeInternal(true);
     }
@@ -177,12 +185,12 @@ final class MarketSocket {
         return b.toString();
     }
 
-    private void scheduleReconnect() {
-        if (manualClose || lastSymbols == null || lastSymbols.isEmpty()) return;
+    private void scheduleReconnect(int gen) {
+        if (gen != generation || manualClose || lastSymbols == null || lastSymbols.isEmpty()) return;
         long delay = Math.min(30000L, 1000L * (1L << Math.min(retryCount++, 5)));
         handler.removeCallbacksAndMessages(null);
         handler.postDelayed(() -> {
-            if (!manualClose && lastSymbols != null) connect(lastSymbols);
+            if (gen == generation && !manualClose && lastSymbols != null) connect(lastSymbols);
         }, delay);
     }
 }
