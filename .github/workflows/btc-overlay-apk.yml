@@ -1,8 +1,8 @@
-name: Build Wantview V3.1 APK
+name: Build Wantview V3.2 APK
 
 on:
   push:
-    branches: [ "wantview-v3-1" ]
+    branches: [ "wantview-v3-2" ]
   workflow_dispatch:
 
 jobs:
@@ -29,6 +29,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Wantview-v3.1-debug
+          name: Wantview-v3.2-debug
           path: btc-floating-overlay-v1/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
