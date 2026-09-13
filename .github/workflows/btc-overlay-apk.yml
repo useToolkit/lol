@@ -1,8 +1,8 @@
-name: Build BTC Floating APK
+name: Build Wantview APK
 
 on:
   push:
-    branches: [ "btc-floating-overlay-v1" ]
+    branches: [ "wantview-v2" ]
   workflow_dispatch:
 
 jobs:
@@ -29,6 +29,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: BTC-Floating-Price-v1-debug
+          name: Wantview-v2-debug
           path: btc-floating-overlay-v1/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

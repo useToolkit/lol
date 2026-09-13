@@ -5,10 +5,15 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.ArrayAdapter;
@@ -22,65 +27,81 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.List;
-import java.util.Locale;
 
 public class MainActivity extends Activity {
-    private LinearLayout symbolList;
+    private static final int BG = Color.rgb(7, 16, 30);
+    private static final int CARD = Color.rgb(17, 28, 45);
+    private static final int MUTED = Color.rgb(151, 166, 188);
+    private static final int ACCENT = Color.rgb(45, 171, 255);
+
     private final long[] intervals = {3000L, 1000L, 500L};
+    private final Handler searchHandler = new Handler(Looper.getMainLooper());
+    private LinearLayout symbolList;
+    private LinearLayout searchResults;
+    private TextView searchStatus;
+    private SymbolSearchClient searchClient;
+    private Runnable pendingSearch;
+    private int searchVersion;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        searchClient = new SymbolSearchClient();
         buildUi();
         requestNotificationPermission();
     }
 
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(BG);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(24), dp(20), dp(32));
+        root.setPadding(dp(20), dp(26), dp(20), dp(36));
         scroll.addView(root);
 
-        TextView title = text("BTC Floating Price", 26, true);
-        root.addView(title);
-        TextView sub = text("TradingView의 BINANCE 심볼 기준 · Binance WebSocket", 13, false);
-        sub.setTextColor(Color.DKGRAY);
+        TextView brand = text("Wantview", 30, true);
+        root.addView(brand);
+        TextView sub = text("Markets, always with you", 14, false);
+        sub.setTextColor(MUTED);
+        sub.setPadding(0, 0, 0, dp(18));
         root.addView(sub);
 
-        Button overlay = new Button(this);
-        overlay.setText("플로팅 가격창 시작 / 다시 시작");
+        Button overlay = button("플로팅 가격창 시작 / 새로고침", true);
         overlay.setOnClickListener(v -> startOverlay());
         root.addView(overlay, lpMatch(dp(56)));
 
-        Button stop = new Button(this);
-        stop.setText("플로팅 가격창 종료");
+        Button stop = button("플로팅 가격창 종료", false);
         stop.setOnClickListener(v -> stopService(new Intent(this, OverlayService.class)));
-        root.addView(stop, lpMatch(dp(52)));
+        LinearLayout.LayoutParams stopLp = lpMatch(dp(50));
+        stopLp.topMargin = dp(8);
+        root.addView(stop, stopLp);
 
-        root.addView(section("종목"));
-        LinearLayout addRow = new LinearLayout(this);
-        addRow.setOrientation(LinearLayout.HORIZONTAL);
-        EditText input = new EditText(this);
-        input.setHint("예: BTCUSDT");
-        input.setSingleLine(true);
-        addRow.addView(input, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        Button add = new Button(this);
-        add.setText("추가");
-        add.setOnClickListener(v -> {
-            String s = input.getText().toString().trim().toUpperCase(Locale.US);
-            if (!s.matches("[A-Z0-9]{5,20}")) {
-                Toast.makeText(this, "BINANCE 심볼 형식으로 입력하세요. 예: BTCUSDT", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            List<String> list = AppPrefs.getSymbols(this);
-            if (!list.contains(s)) list.add(s);
-            AppPrefs.setSymbols(this, list);
-            input.setText("");
-            refreshSymbols();
+        root.addView(section("TradingView 종목 검색"));
+        EditText search = new EditText(this);
+        search.setSingleLine(true);
+        search.setHint("AAPL, BTCUSDT, GOLD, USDJPY…");
+        search.setHintTextColor(Color.rgb(105, 125, 151));
+        search.setTextColor(Color.WHITE);
+        search.setTextSize(17);
+        search.setPadding(dp(14), 0, dp(14), 0);
+        search.setBackground(roundRect(CARD, Color.rgb(49, 68, 94), 14));
+        root.addView(search, lpMatch(dp(54)));
+
+        searchStatus = text("검색어를 입력하면 TradingView 종목을 찾습니다.", 12, false);
+        searchStatus.setTextColor(MUTED);
+        searchStatus.setPadding(dp(2), dp(8), 0, dp(4));
+        root.addView(searchStatus);
+
+        searchResults = new LinearLayout(this);
+        searchResults.setOrientation(LinearLayout.VERTICAL);
+        root.addView(searchResults);
+
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable e) { scheduleSearch(e.toString()); }
         });
-        addRow.addView(add, new LinearLayout.LayoutParams(dp(86), dp(52)));
-        root.addView(addRow);
 
+        root.addView(section("플로팅에 표시할 종목"));
         symbolList = new LinearLayout(this);
         symbolList.setOrientation(LinearLayout.VERTICAL);
         root.addView(symbolList);
@@ -102,9 +123,18 @@ public class MainActivity extends Activity {
         root.addView(section("표시 갱신 속도"));
         Spinner spinner = new Spinner(this);
         String[] labels = {"절전 3초", "기본 1초 (추천)", "빠름 0.5초"};
-        spinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, labels) {
+            @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                TextView v = (TextView) super.getView(position, convertView, parent);
+                v.setTextColor(Color.WHITE);
+                v.setPadding(dp(12), 0, dp(12), 0);
+                return v;
+            }
+        };
+        spinner.setAdapter(adapter);
         long current = AppPrefs.getInterval(this);
         spinner.setSelection(current == 3000 ? 0 : current == 500 ? 2 : 1);
+        spinner.setBackground(roundRect(CARD, Color.rgb(49, 68, 94), 12));
         spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
                 AppPrefs.setInterval(MainActivity.this, intervals[position]);
@@ -113,34 +143,126 @@ public class MainActivity extends Activity {
         });
         root.addView(spinner, lpMatch(dp(52)));
 
-        TextView note = text("※ 현재 V1은 BINANCE:BTCUSDT 같은 Binance 현물 심볼을 지원합니다. 가격은 TradingView 화면을 긁는 방식이 아니라 동일 원천 거래소의 실시간 WebSocket을 사용합니다.", 12, false);
-        note.setPadding(0, dp(20), 0, 0);
-        note.setTextColor(Color.GRAY);
+        TextView note = text("TradingView 심볼 검색과 시세 세션을 사용합니다. 로그인하지 않은 공개 세션은 거래소 정책에 따라 시세가 지연되거나 일부 종목이 제한될 수 있습니다. 플로팅 창의 − / + 버튼으로 접기·펼치기가 가능합니다.", 12, false);
+        note.setPadding(0, dp(22), 0, 0);
+        note.setTextColor(MUTED);
         root.addView(note);
 
         setContentView(scroll);
+    }
+
+    private void scheduleSearch(String raw) {
+        if (pendingSearch != null) searchHandler.removeCallbacks(pendingSearch);
+        if (searchClient != null) searchClient.cancel();
+        searchResults.removeAllViews();
+        String query = raw == null ? "" : raw.trim();
+        int version = ++searchVersion;
+        if (query.isEmpty()) {
+            searchStatus.setText("검색어를 입력하면 TradingView 종목을 찾습니다.");
+            return;
+        }
+        searchStatus.setText("검색 준비 중…");
+        pendingSearch = () -> {
+            searchStatus.setText("TradingView에서 검색 중…");
+            searchClient.search(query, new SymbolSearchClient.SearchCallback() {
+                @Override public void onResult(List<SymbolSearchClient.Item> items) {
+                    runOnUiThread(() -> {
+                        if (version != searchVersion) return;
+                        renderSearchResults(items);
+                    });
+                }
+
+                @Override public void onError(String message) {
+                    runOnUiThread(() -> {
+                        if (version != searchVersion) return;
+                        searchStatus.setText("검색 실패 · " + message);
+                    });
+                }
+            });
+        };
+        searchHandler.postDelayed(pendingSearch, 450L);
+    }
+
+    private void renderSearchResults(List<SymbolSearchClient.Item> items) {
+        searchResults.removeAllViews();
+        if (items == null || items.isEmpty()) {
+            searchStatus.setText("검색 결과가 없습니다.");
+            return;
+        }
+        searchStatus.setText("검색 결과 " + items.size() + "개 · 원하는 종목을 추가하세요.");
+        List<String> selected = AppPrefs.getSymbols(this);
+        int max = Math.min(20, items.size());
+        for (int i = 0; i < max; i++) {
+            SymbolSearchClient.Item item = items.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(8), dp(8));
+            row.setBackground(roundRect(CARD, Color.rgb(40, 57, 80), 12));
+
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.VERTICAL);
+            TextView top = text(item.symbol + "  ·  " + item.exchange, 15, true);
+            info.addView(top);
+            String detail = item.description;
+            if (item.type != null && !item.type.isEmpty()) detail += (detail.isEmpty() ? "" : "  ·  ") + item.type;
+            TextView desc = text(detail, 11, false);
+            desc.setTextColor(MUTED);
+            info.addView(desc);
+            row.addView(info, new LinearLayout.LayoutParams(0, dp(54), 1f));
+
+            Button add = button(selected.contains(item.fullName) ? "추가됨" : "+ 추가", true);
+            add.setEnabled(!selected.contains(item.fullName));
+            add.setOnClickListener(v -> {
+                List<String> now = AppPrefs.getSymbols(this);
+                if (!now.contains(item.fullName)) now.add(item.fullName);
+                AppPrefs.setSymbols(this, now);
+                refreshSymbols();
+                add.setText("추가됨");
+                add.setEnabled(false);
+            });
+            row.addView(add, new LinearLayout.LayoutParams(dp(84), dp(42)));
+            LinearLayout.LayoutParams rowLp = lpMatch(dp(70));
+            rowLp.bottomMargin = dp(7);
+            searchResults.addView(row, rowLp);
+        }
     }
 
     private void refreshSymbols() {
         if (symbolList == null) return;
         symbolList.removeAllViews();
         List<String> list = AppPrefs.getSymbols(this);
+        if (list.isEmpty()) {
+            TextView empty = text("표시할 종목이 없습니다. 위 검색에서 추가하세요.", 13, false);
+            empty.setTextColor(MUTED);
+            symbolList.addView(empty, lpMatch(dp(48)));
+            return;
+        }
         for (String s : list) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView name = text(s, 17, true);
-            row.addView(name, new LinearLayout.LayoutParams(0, dp(48), 1f));
-            Button remove = new Button(this);
-            remove.setText("삭제");
+            row.setPadding(dp(12), dp(6), dp(8), dp(6));
+            row.setBackground(roundRect(CARD, Color.rgb(40, 57, 80), 12));
+            LinearLayout names = new LinearLayout(this);
+            names.setOrientation(LinearLayout.VERTICAL);
+            TextView name = text(symbolPart(s), 16, true);
+            names.addView(name);
+            TextView full = text(s, 11, false);
+            full.setTextColor(MUTED);
+            names.addView(full);
+            row.addView(names, new LinearLayout.LayoutParams(0, dp(52), 1f));
+            Button remove = button("삭제", false);
             remove.setOnClickListener(v -> {
                 List<String> now = AppPrefs.getSymbols(this);
                 now.remove(s);
                 AppPrefs.setSymbols(this, now);
                 refreshSymbols();
             });
-            row.addView(remove, new LinearLayout.LayoutParams(dp(78), dp(46)));
-            symbolList.addView(row);
+            row.addView(remove, new LinearLayout.LayoutParams(dp(72), dp(42)));
+            LinearLayout.LayoutParams rowLp = lpMatch(dp(66));
+            rowLp.bottomMargin = dp(7);
+            symbolList.addView(row, rowLp);
         }
     }
 
@@ -155,6 +277,7 @@ public class MainActivity extends Activity {
         Intent service = new Intent(this, OverlayService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
         else startService(service);
+        Toast.makeText(this, "Wantview 플로팅을 시작했습니다.", Toast.LENGTH_SHORT).show();
     }
 
     private void requestNotificationPermission() {
@@ -164,18 +287,44 @@ public class MainActivity extends Activity {
     }
 
     private TextView section(String s) {
-        TextView t = text(s, 18, true);
-        t.setPadding(0, dp(22), 0, dp(8));
+        TextView t = text(s, 17, true);
+        t.setTextColor(Color.rgb(118, 207, 255));
+        t.setPadding(0, dp(24), 0, dp(9));
         return t;
     }
 
     private TextView text(String s, int sp, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        t.setText(s == null ? "" : s);
         t.setTextSize(sp);
-        t.setTextColor(Color.BLACK);
+        t.setTextColor(Color.WHITE);
         if (bold) t.setTypeface(null, android.graphics.Typeface.BOLD);
         return t;
+    }
+
+    private Button button(String label, boolean primary) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(13);
+        b.setAllCaps(false);
+        b.setTextColor(Color.WHITE);
+        b.setPadding(dp(8), 0, dp(8), 0);
+        b.setBackground(roundRect(primary ? Color.rgb(19, 117, 237) : CARD,
+                primary ? Color.rgb(62, 174, 255) : Color.rgb(56, 73, 98), 12));
+        return b;
+    }
+
+    private GradientDrawable roundRect(int color, int stroke, int radiusDp) {
+        GradientDrawable d = new GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radiusDp));
+        d.setStroke(dp(1), stroke);
+        return d;
+    }
+
+    private String symbolPart(String full) {
+        int p = full.indexOf(':');
+        return p >= 0 && p + 1 < full.length() ? full.substring(p + 1) : full;
     }
 
     private LinearLayout.LayoutParams lpMatch(int h) {
@@ -184,5 +333,11 @@ public class MainActivity extends Activity {
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    @Override protected void onDestroy() {
+        searchHandler.removeCallbacksAndMessages(null);
+        if (searchClient != null) searchClient.cancel();
+        super.onDestroy();
     }
 }

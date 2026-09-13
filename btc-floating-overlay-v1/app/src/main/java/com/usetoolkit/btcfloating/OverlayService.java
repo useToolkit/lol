@@ -31,15 +31,19 @@ import java.util.Locale;
 import java.util.Map;
 
 public class OverlayService extends Service implements MarketSocket.Listener {
-    private static final String CHANNEL = "btc_float_channel";
+    private static final String CHANNEL = "wantview_float_channel";
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Map<String, Quote> quotes = new LinkedHashMap<>();
     private WindowManager wm;
     private LinearLayout panel;
+    private LinearLayout quoteBox;
     private TextView status;
+    private TextView headerText;
+    private TextView toggle;
     private WindowManager.LayoutParams params;
     private MarketSocket market;
     private boolean screenOn = true;
+    private boolean collapsed;
 
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -69,6 +73,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         filter.addAction(Intent.ACTION_SCREEN_ON);
         registerReceiver(screenReceiver, filter);
         market = new MarketSocket(this);
+        collapsed = AppPrefs.getCollapsed(this);
         createOverlay();
         connectMarket();
         uiHandler.post(renderer);
@@ -89,20 +94,51 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(12), dp(9), dp(12), dp(9));
+        panel.setPadding(dp(11), dp(7), dp(11), dp(9));
         panel.setAlpha(AppPrefs.getAlpha(this));
 
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.rgb(24, 25, 28));
-        bg.setCornerRadius(dp(14));
-        bg.setStroke(dp(1), Color.rgb(65, 68, 74));
+        bg.setColor(Color.rgb(10, 18, 31));
+        bg.setCornerRadius(dp(16));
+        bg.setStroke(dp(1), Color.rgb(43, 78, 118));
         panel.setBackground(bg);
 
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        headerText = new TextView(this);
+        headerText.setText("Wantview");
+        headerText.setTextColor(Color.WHITE);
+        headerText.setTextSize(14);
+        headerText.setTypeface(null, android.graphics.Typeface.BOLD);
+        headerText.setPadding(dp(2), dp(2), dp(12), dp(2));
+        header.addView(headerText, new LinearLayout.LayoutParams(0, dp(34), 1f));
+
+        toggle = new TextView(this);
+        toggle.setGravity(Gravity.CENTER);
+        toggle.setTextColor(Color.rgb(104, 205, 255));
+        toggle.setTextSize(21);
+        toggle.setTypeface(null, android.graphics.Typeface.BOLD);
+        toggle.setOnClickListener(v -> {
+            collapsed = !collapsed;
+            AppPrefs.setCollapsed(this, collapsed);
+            applyCollapsed();
+            renderQuotes();
+        });
+        header.addView(toggle, new LinearLayout.LayoutParams(dp(38), dp(34)));
+        panel.addView(header, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(34)));
+        enableDrag(header);
+
         status = new TextView(this);
-        status.setText("연결 중…");
-        status.setTextColor(Color.LTGRAY);
-        status.setTextSize(11);
+        status.setText("TradingView · 연결 중…");
+        status.setTextColor(Color.rgb(156, 174, 198));
+        status.setTextSize(10);
+        status.setPadding(dp(2), 0, dp(2), dp(4));
         panel.addView(status);
+
+        quoteBox = new LinearLayout(this);
+        quoteBox.setOrientation(LinearLayout.VERTICAL);
+        panel.addView(quoteBox);
 
         int type = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -117,13 +153,29 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         params.x = dp(10);
         params.y = dp(120);
         wm.addView(panel, params);
-        enableDrag(panel);
+        applyCollapsed();
+    }
+
+    private void applyCollapsed() {
+        if (quoteBox == null || status == null || toggle == null) return;
+        quoteBox.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        status.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        toggle.setText(collapsed ? "+" : "−");
+        if (!collapsed && headerText != null) {
+            headerText.setText("Wantview");
+            headerText.setTextColor(Color.WHITE);
+        }
+        if (wm != null && panel != null && params != null) {
+            try { wm.updateViewLayout(panel, params); } catch (Exception ignored) { }
+        }
     }
 
     private void enableDrag(View view) {
         view.setOnTouchListener(new View.OnTouchListener() {
             int startX, startY;
             float downX, downY;
+            boolean moved;
+
             @Override public boolean onTouch(View v, MotionEvent e) {
                 switch (e.getAction()) {
                     case MotionEvent.ACTION_DOWN:
@@ -131,12 +183,18 @@ public class OverlayService extends Service implements MarketSocket.Listener {
                         startY = params.y;
                         downX = e.getRawX();
                         downY = e.getRawY();
+                        moved = false;
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        params.x = startX - (int) (e.getRawX() - downX);
-                        params.y = startY + (int) (e.getRawY() - downY);
+                        float dx = e.getRawX() - downX;
+                        float dy = e.getRawY() - downY;
+                        if (Math.abs(dx) > dp(3) || Math.abs(dy) > dp(3)) moved = true;
+                        params.x = startX - (int) dx;
+                        params.y = startY + (int) dy;
                         if (wm != null && panel != null) wm.updateViewLayout(panel, params);
                         return true;
+                    case MotionEvent.ACTION_UP:
+                        return moved;
                 }
                 return false;
             }
@@ -145,8 +203,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
 
     private void connectMarket() {
         if (!screenOn || market == null) return;
-        List<String> symbols = AppPrefs.getSymbols(this);
-        market.connect(symbols);
+        market.connect(AppPrefs.getSymbols(this));
     }
 
     @Override public void onPrice(String symbol, double price, double changePct) {
@@ -157,53 +214,110 @@ public class OverlayService extends Service implements MarketSocket.Listener {
 
     @Override public void onState(String state) {
         uiHandler.post(() -> {
-            if (status != null) {
-                status.setText("connected".equals(state) ? "BINANCE · 실시간" : "BINANCE · " + state);
-                status.setTextColor("connected".equals(state) ? Color.rgb(110, 220, 150) : Color.LTGRAY);
+            if (status == null) return;
+            if ("connected".equals(state)) {
+                status.setText("TradingView · 연결됨");
+                status.setTextColor(Color.rgb(101, 218, 153));
+            } else if ("restricted".equals(state)) {
+                status.setText("TradingView · 일부 데이터 제한");
+                status.setTextColor(Color.rgb(255, 184, 92));
+            } else {
+                status.setText("TradingView · " + state);
+                status.setTextColor(Color.rgb(156, 174, 198));
             }
         });
     }
 
     private void renderQuotes() {
-        if (panel == null) return;
+        if (panel == null || quoteBox == null) return;
         panel.setAlpha(AppPrefs.getAlpha(this));
-        while (panel.getChildCount() > 1) panel.removeViewAt(1);
         List<String> symbols = AppPrefs.getSymbols(this);
+        if (collapsed) {
+            renderCollapsedHeader(symbols);
+            return;
+        }
+
+        headerText.setText("Wantview");
+        headerText.setTextColor(Color.WHITE);
+        quoteBox.removeAllViews();
         synchronized (quotes) {
             for (String symbol : symbols) {
                 Quote q = quotes.get(symbol);
-                TextView row = new TextView(this);
-                String base = prettySymbol(symbol);
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(2), dp(3), dp(2), dp(3));
+
+                TextView name = new TextView(this);
+                name.setText(prettySymbol(symbol));
+                name.setTextColor(Color.WHITE);
+                name.setTextSize(13);
+                name.setTypeface(null, android.graphics.Typeface.BOLD);
+                row.addView(name, new LinearLayout.LayoutParams(dp(88), dp(28)));
+
+                TextView value = new TextView(this);
+                value.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+                value.setTextSize(13);
+                value.setTypeface(null, android.graphics.Typeface.BOLD);
                 if (q == null) {
-                    row.setText(base + "   --");
-                    row.setTextColor(Color.WHITE);
+                    value.setText("--");
+                    value.setTextColor(Color.rgb(172, 185, 204));
                 } else {
-                    row.setText(String.format(Locale.US, "%s   %s   %+.2f%%", base, formatPrice(q.price), q.change));
-                    row.setTextColor(q.change >= 0 ? Color.rgb(84, 214, 136) : Color.rgb(255, 107, 107));
+                    value.setText(String.format(Locale.US, "%s   %+.2f%%", formatPrice(q.price), q.change));
+                    value.setTextColor(q.change >= 0 ? Color.rgb(75, 220, 142) : Color.rgb(255, 101, 111));
                 }
-                row.setTextSize(15);
-                row.setTypeface(null, android.graphics.Typeface.BOLD);
-                row.setPadding(0, dp(3), 0, dp(3));
-                panel.addView(row);
+                row.addView(value, new LinearLayout.LayoutParams(dp(142), dp(28)));
+                quoteBox.addView(row);
             }
+        }
+        if (symbols.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("앱에서 종목을 추가하세요");
+            empty.setTextColor(Color.LTGRAY);
+            empty.setTextSize(12);
+            empty.setPadding(dp(2), dp(4), dp(2), dp(4));
+            quoteBox.addView(empty);
         }
     }
 
-    private String prettySymbol(String s) {
-        if (s.endsWith("USDT")) return s.substring(0, s.length() - 4);
+    private void renderCollapsedHeader(List<String> symbols) {
+        if (headerText == null) return;
+        if (symbols.isEmpty()) {
+            headerText.setText("Wantview");
+            headerText.setTextColor(Color.WHITE);
+            return;
+        }
+        String first = symbols.get(0);
+        Quote q;
+        synchronized (quotes) { q = quotes.get(first); }
+        if (q == null) {
+            headerText.setText(prettySymbol(first) + "   --");
+            headerText.setTextColor(Color.WHITE);
+        } else {
+            headerText.setText(String.format(Locale.US, "%s  %s  %+.2f%%",
+                    prettySymbol(first), formatPrice(q.price), q.change));
+            headerText.setTextColor(q.change >= 0 ? Color.rgb(75, 220, 142) : Color.rgb(255, 101, 111));
+        }
+    }
+
+    private String prettySymbol(String full) {
+        int p = full.indexOf(':');
+        String s = p >= 0 && p + 1 < full.length() ? full.substring(p + 1) : full;
+        if (s.length() > 12) s = s.substring(0, 12);
         return s;
     }
 
     private String formatPrice(double p) {
-        if (p >= 1000) return new DecimalFormat("#,##0.##").format(p);
-        if (p >= 1) return new DecimalFormat("#,##0.####").format(p);
+        if (Math.abs(p) >= 1000) return new DecimalFormat("#,##0.##").format(p);
+        if (Math.abs(p) >= 1) return new DecimalFormat("#,##0.####").format(p);
         return new DecimalFormat("0.########").format(p);
     }
 
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel c = new NotificationChannel(CHANNEL, "Floating Price", NotificationManager.IMPORTANCE_LOW);
-            c.setDescription("실시간 플로팅 가격창 유지용");
+            NotificationChannel c = new NotificationChannel(CHANNEL, "Wantview Floating", NotificationManager.IMPORTANCE_LOW);
+            c.setDescription("Wantview 플로팅 시세 표시 유지용");
+            c.setSound(null, null);
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
         }
     }
@@ -214,11 +328,12 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL)
                 : new Notification.Builder(this);
-        return b.setContentTitle("BTC Floating Price")
+        return b.setContentTitle("Wantview")
                 .setContentText("플로팅 시세 표시 중")
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setSmallIcon(R.drawable.ic_stat_wantview)
                 .setContentIntent(pi)
                 .setOngoing(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
                 .build();
     }
 
