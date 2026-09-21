@@ -30,3 +30,14 @@
 gradle :app:assembleDebug
 
 GitHub Actions는 fuelpick-app 브랜치 push 시 APK를 FuelPick-APK artifact로 생성합니다.
+
+
+## v1.2 서버 프록시 구조
+- Android 앱에는 오피넷 API 키를 저장하지 않음
+- 앱은 현재 위치를 약 110m 단위로 반올림한 뒤 FuelPick 서버만 호출
+- 서버가 OPINET_API_KEY 환경변수로 오피넷 API 호출
+- 서버 응답은 5분 CDN 캐시
+- 앱은 GitHub의 `fuelpick-config.json`에서 서버 주소를 읽어오므로 서버 URL 변경 시 APK 재설치 불필요
+- Vercel 프로젝트 Root Directory는 `server`
+- 필수 환경변수: `OPINET_API_KEY`
+- 선택 환경변수: `FUELPICK_CLIENT_TOKEN`
