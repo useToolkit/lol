@@ -549,9 +549,8 @@ public class MainActivity extends Activity {
         TextView guide=text("주유 가격은 전용 서버가 오피넷에서 받아오므로 API 키 입력이 필요 없습니다. 추천은 주유비 + 이동 연료비의 예상 실질지출로 계산합니다.",12,SUB,false);
         guide.setPadding(0,dp(2),0,0);
         box.addView(guide);
-        AlertDialog dlg=new AlertDialog.Builder(this).setTitle("설정").setView(box).setNegativeButton("취소",null).setNeutralButton("API 키 발급",null).setPositiveButton("저장",null).create();
+        AlertDialog dlg=new AlertDialog.Builder(this).setTitle("설정").setView(box).setNegativeButton("취소",null).setPositiveButton("저장",null).create();
         dlg.setOnShowListener(x->{
-            dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.opinet.co.kr/user/custapi/custApiInfo.do"))));
             dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
                 double litersValue = parsePositive(liters.getText().toString(), 40.0);
                 double efficiencyValue = parsePositive(efficiencyInput.getText().toString(), 10.0);
