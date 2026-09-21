@@ -302,7 +302,7 @@ public class MainActivity extends Activity {
             try {
                 String url = "https://www.opinet.co.kr/api/aroundAll.do?out=json&x=" + fmt(k[0]) +
                         "&y=" + fmt(k[1]) + "&radius=5000&sort=1&prodcd=" + enc(fuel) +
-                        "&certkey=" + enc(key);
+                        "&code=" + enc(key);
                 JSONObject json = getJson(url);
                 List<Station> list = parseAround(json);
                 synchronized (nearby) {
@@ -410,7 +410,7 @@ public class MainActivity extends Activity {
                 try {
                     JSONObject json = getJson(
                             "https://www.opinet.co.kr/api/detailById.do?out=json&id=" + enc(id) +
-                                    "&certkey=" + enc(key));
+                                    "&code=" + enc(key));
                     Station s = parseDetail(json, fuel);
                     if (s != null) {
                         if (currentLocation != null && s.kx != 0 && s.ky != 0) {
@@ -781,19 +781,42 @@ public class MainActivity extends Activity {
                 double efficiencyValue = parsePositive(efficiencyInput.getText().toString(), 10.0);
                 String newFuel = selected[0];
                 String oldFuel = fuelCode();
+                String apiKey = key.getText().toString().trim();
 
-                prefs.edit()
-                        .putString("fuel", newFuel)
-                        .putString("api_key", key.getText().toString().trim())
-                        .putString("fill_liters", String.valueOf(litersValue))
-                        .putString("efficiency", String.valueOf(efficiencyValue))
-                        .putBoolean("round_trip", roundSelected[0])
-                        .apply();
+                if (apiKey.isEmpty()) {
+                    Toast.makeText(this, "오피넷 API 인증키를 입력해 주세요.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
 
-                if (!newFuel.equals(oldFuel)) clearCache();
-                fuelLabel.setText(fuelName());
-                dlg.dismiss();
-                requestLocationAndLoad(false);
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+                dlg.getButton(AlertDialog.BUTTON_POSITIVE).setText("확인 중");
+
+                executor.execute(() -> {
+                    boolean valid = validateApiKey(apiKey);
+                    runOnUiThread(() -> {
+                        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setText("저장");
+
+                        if (!valid) {
+                            Toast.makeText(this, "인증키 확인에 실패했습니다. 발급받은 키를 다시 확인해 주세요.", Toast.LENGTH_LONG).show();
+                            return;
+                        }
+
+                        prefs.edit()
+                                .putString("fuel", newFuel)
+                                .putString("api_key", apiKey)
+                                .putString("fill_liters", String.valueOf(litersValue))
+                                .putString("efficiency", String.valueOf(efficiencyValue))
+                                .putBoolean("round_trip", roundSelected[0])
+                                .apply();
+
+                        clearCache();
+                        fuelLabel.setText(fuelName());
+                        dlg.dismiss();
+                        Toast.makeText(this, "인증키 확인 완료", Toast.LENGTH_SHORT).show();
+                        requestLocationAndLoad(true);
+                    });
+                });
             });
         });
         dlg.show();
@@ -810,6 +833,18 @@ public class MainActivity extends Activity {
         e.setPadding(dp(12), 0, dp(12), 0);
         e.setBackground(rounded(Color.rgb(243, 245, 246), 12, Color.TRANSPARENT, 0));
         return e;
+    }
+
+    private boolean validateApiKey(String key) {
+        try {
+            JSONObject json = getJson("https://www.opinet.co.kr/api/avgAllPrice.do?out=json&code=" + enc(key));
+            JSONObject result = json.optJSONObject("RESULT");
+            if (result == null) return false;
+            JSONArray oils = result.optJSONArray("OIL");
+            return oils != null && oils.length() > 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private JSONObject getJson(String urlText) throws Exception {
