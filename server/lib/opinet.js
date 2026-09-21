@@ -77,3 +77,22 @@ export function normalizeAround(o){
   const x=Number(o.GIS_X_COOR||0),y=Number(o.GIS_Y_COOR||0),ll=(x&&y)?katecToWgs(x,y):[0,0];
   return {id:o.UNI_ID||"",name:o.OS_NM||"",brand:o.POLL_DIV_CD||o.POLL_DIV_CO||"",price:Number(o.PRICE||0),distance:Number(o.DISTANCE||0),lat:ll[0],lng:ll[1]};
 }
+
+const rateBuckets = new Map();
+export function rateLimit(req, limit = 30, windowMs = 60000) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "");
+  const ip = forwarded.split(",")[0].trim() || String(req.socket?.remoteAddress || "unknown");
+  const now = Date.now();
+  const current = rateBuckets.get(ip);
+  if (!current || now - current.start >= windowMs) {
+    rateBuckets.set(ip, { start: now, count: 1 });
+    return true;
+  }
+  current.count += 1;
+  if (rateBuckets.size > 1000) {
+    for (const [key, value] of rateBuckets) {
+      if (now - value.start >= windowMs) rateBuckets.delete(key);
+    }
+  }
+  return current.count <= limit;
+}
