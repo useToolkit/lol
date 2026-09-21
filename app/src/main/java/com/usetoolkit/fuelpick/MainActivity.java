@@ -969,10 +969,25 @@ public class MainActivity extends Activity {
 
     private String priceDiffText(Station station) {
         if (pinnedStation == null || pinnedStation.price <= 0 || station.price <= 0) return "";
-        int diff = station.price - pinnedStation.price;
-        if (station.id.equals(pinnedStation.id)) return "비교 기준과 동일";
-        if (diff == 0) return "비교 기준과 같은 가격";
-        return (diff > 0 ? "+" : "") + new DecimalFormat("#,###").format(diff) + "원/L";
+
+        int perLiterDiff = station.price - pinnedStation.price;
+        long fillCostDiff = Math.round(perLiterDiff * fillLiters());
+        String liters = trimNumber(fillLiters());
+
+        if (station.id.equals(pinnedStation.id)) {
+            return "비교 기준과 동일 · " + liters + "L 기준 차이 0원";
+        }
+
+        if (perLiterDiff == 0) {
+            return "같은 가격 · " + liters + "L 기준 차이 0원";
+        }
+
+        String perLiter = (perLiterDiff > 0 ? "+" : "") +
+                new DecimalFormat("#,###").format(perLiterDiff) + "원/L";
+        String total = (fillCostDiff > 0 ? "+" : "") +
+                new DecimalFormat("#,###").format(fillCostDiff) + "원";
+
+        return perLiter + " · " + liters + "L 주유 시 " + total;
     }
 
     private LinearLayout stationCard(Station s, boolean recommended) {
@@ -1232,7 +1247,7 @@ public class MainActivity extends Activity {
         c.setConnectTimeout(7000);
         c.setReadTimeout(7000);
         c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("User-Agent", "oily/1.5");
+        c.setRequestProperty("User-Agent", "oily/1.5.1");
         int code = c.getResponseCode();
         InputStream in = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
         BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
