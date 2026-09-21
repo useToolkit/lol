@@ -1,8 +1,9 @@
-import { checkClient, normalizeAround, opinet, send, validateFuel, wgsToKatec } from "../lib/opinet.js";
+import { checkClient, normalizeAround, opinet, rateLimit, send, validateFuel, wgsToKatec } from "../lib/opinet.js";
 
 export default async function handler(req,res){
   if(req.method!=="GET") return send(res,405,{error:"METHOD_NOT_ALLOWED"});
   if(!checkClient(req)) return send(res,401,{error:"UNAUTHORIZED"});
+  if(!rateLimit(req)) return send(res,429,{error:"TOO_MANY_REQUESTS"});
   try{
     let lat=Number(req.query.lat),lng=Number(req.query.lng);
     if(!Number.isFinite(lat)||!Number.isFinite(lng)||lat<33||lat>39.5||lng<124||lng>132) return send(res,400,{error:"INVALID_LOCATION"});
