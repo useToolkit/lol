@@ -1,8 +1,9 @@
-import { checkClient, katecToWgs, opinet, send, validateFuel } from "../lib/opinet.js";
+import { checkClient, katecToWgs, opinet, rateLimit, send, validateFuel } from "../lib/opinet.js";
 
 export default async function handler(req,res){
   if(req.method!=="GET") return send(res,405,{error:"METHOD_NOT_ALLOWED"});
   if(!checkClient(req)) return send(res,401,{error:"UNAUTHORIZED"});
+  if(!rateLimit(req)) return send(res,429,{error:"TOO_MANY_REQUESTS"});
   const id=String(req.query.id||"").trim();
   if(!/^[A-Za-z0-9_-]{2,40}$/.test(id)) return send(res,400,{error:"INVALID_ID"});
   try{
