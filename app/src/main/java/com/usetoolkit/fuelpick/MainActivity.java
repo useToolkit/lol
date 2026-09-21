@@ -16,6 +16,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.text.InputType;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -69,6 +71,8 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private LinearLayout root, content, favoritesBox, listBox, recommendedBox;
     private TextView locationText, fuelLabel, statusText, sortPrice, sortDistance;
+    private EditText searchInput;
+    private String searchQuery = "";
     private ProgressBar progress;
     private Location currentLocation;
     private boolean sortByPrice = true;
@@ -168,7 +172,42 @@ public class MainActivity extends Activity {
         sortRow.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
         sortRow.addView(sortDistance, new LinearLayout.LayoutParams(0, dp(44), 1));
         controlCard.addView(sortRow);
-        root.addView(controlCard, lpMatchWrap(8, 8));
+        root.addView(controlCard, lpMatchWrap(8, 6));
+
+        LinearLayout searchCard = card();
+        searchCard.setPadding(dp(12), dp(8), dp(8), dp(8));
+        LinearLayout searchRow = row();
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        searchInput = new EditText(this);
+        searchInput.setHint("주유소 이름 검색 · 반경 5km");
+        searchInput.setSingleLine(true);
+        searchInput.setTextSize(15);
+        searchInput.setTextColor(TEXT);
+        searchInput.setHintTextColor(SUB);
+        searchInput.setBackgroundColor(Color.TRANSPARENT);
+        searchInput.setPadding(dp(4), 0, dp(8), 0);
+        searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
+        searchInput.setLayoutParams(new LinearLayout.LayoutParams(0, dp(44), 1));
+        searchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
+                searchQuery = text == null ? "" : text.toString().trim();
+                renderList();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        searchRow.addView(searchInput);
+
+        Button clearSearch = button("지우기", false);
+        clearSearch.setOnClickListener(v -> {
+            searchInput.setText("");
+            searchInput.clearFocus();
+        });
+        searchRow.addView(clearSearch, new LinearLayout.LayoutParams(dp(68), dp(40)));
+
+        searchCard.addView(searchRow);
+        root.addView(searchCard, lpMatchWrap(0, 8));
 
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(true);
@@ -604,13 +643,47 @@ public class MainActivity extends Activity {
         List<Station> copy;
         synchronized (nearby) { copy = new ArrayList<>(nearby); }
 
+        String q = normalizeSearch(searchQuery);
+        if (!q.isEmpty()) {
+            List<Station> filtered = new ArrayList<>();
+            for (Station s : copy) {
+                String name = normalizeSearch(s.name);
+                String brand = normalizeSearch(brandName(s.brand));
+                if (name.contains(q) || brand.contains(q)) filtered.add(s);
+            }
+            copy = filtered;
+        }
+
         if (sortByPrice) {
             copy.sort(Comparator.comparingInt((Station s) -> s.price).thenComparingDouble(s -> s.distance));
         } else {
             copy.sort(Comparator.comparingDouble((Station s) -> s.distance).thenComparingInt(s -> s.price));
         }
 
-        for (Station s : copy) listBox.addView(stationCard(s, false), lpMatchWrap(0, 8));
+        for (Station s : copy) {
+            listBox.addView(stationCard(s, false), lpMatchWrap(0, 8));
+        }
+
+        if (!searchQuery.isEmpty() && copy.isEmpty()) {
+            listBox.addView(infoCard(
+                    "반경 5km 안에서는 ‘" + searchQuery + "’ 검색 결과가 없습니다.",
+                    "네이버지도에서 검색",
+                    () -> openNaverSearch(searchQuery)
+            ), lpMatchWrap(0, 8));
+        } else if (!searchQuery.isEmpty()) {
+            TextView count = text("검색 결과 " + copy.size() + "곳", 12, SUB, false);
+            count.setPadding(dp(4), 0, 0, dp(8));
+            listBox.addView(count, 0);
+        }
+    }
+
+    private static String normalizeSearch(String value) {
+        if (value == null) return "";
+        return value.toLowerCase(Locale.KOREA)
+                .replace(" ", "")
+                .replace("-", "")
+                .replace("㈜", "")
+                .replace("(주)", "");
     }
 
     private LinearLayout stationCard(Station s, boolean recommended) {
@@ -687,6 +760,24 @@ public class MainActivity extends Activity {
             }
         } catch (Exception e) {
             Toast.makeText(this, "네이버지도를 열 수 없습니다.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void openNaverSearch(String query) {
+        if (query == null || query.trim().isEmpty()) return;
+        try {
+            String uri = "nmap://search?query=" + enc(query.trim()) + "&appname=" + getPackageName();
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
+            i.setPackage("com.nhn.android.nmap");
+            startActivity(i);
+        } catch (ActivityNotFoundException e) {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW,
+                        Uri.parse("market://details?id=com.nhn.android.nmap")));
+            } catch (Exception ex) {
+                startActivity(new Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://play.google.com/store/apps/details?id=com.nhn.android.nmap")));
+            }
         }
     }
 
@@ -852,7 +943,7 @@ public class MainActivity extends Activity {
         c.setConnectTimeout(7000);
         c.setReadTimeout(7000);
         c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("User-Agent", "oily/1.3");
+        c.setRequestProperty("User-Agent", "oily/1.4");
         int code = c.getResponseCode();
         InputStream in = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
         BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
