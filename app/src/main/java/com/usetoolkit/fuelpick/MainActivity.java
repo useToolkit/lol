@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private static final int TEXT = Color.rgb(30, 34, 38);
     private static final int SUB = Color.rgb(117, 124, 133);
     private static final String PREFS = "fuelpick_prefs";
+    private static final String REMOTE_CONFIG_URL = "https://raw.githubusercontent.com/useToolkit/lol/fuelpick-app/fuelpick-config.json";
 
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
     private final List<Station> nearby = new ArrayList<>();
@@ -222,37 +223,61 @@ public class MainActivity extends Activity {
     }
 
     private void loadStations() {
-        String key = prefs.getString("api_key", "").trim();
-        if (key.isEmpty()) {
-            progress.setVisibility(View.GONE);
-            statusText.setText("오피넷 API 키가 필요합니다. 우상단 ‘설정’에서 한 번만 입력해 주세요.");
-            recommendedBox.removeAllViews(); favoritesBox.removeAllViews(); listBox.removeAllViews();
-            recommendedBox.addView(infoCard("API 키를 설정하면 현재 위치의 실제 주유 가격을 불러옵니다.", "설정 열기", this::showSettings));
-            return;
-        }
         if (currentLocation == null) return;
-        progress.setVisibility(View.VISIBLE); statusText.setText("주변 가격을 불러오는 중…");
-        double[] k = KatecConverter.wgs84ToKatec(currentLocation.getLatitude(), currentLocation.getLongitude());
+        progress.setVisibility(View.VISIBLE);
+        statusText.setText("주변 가격을 불러오는 중…");
         String fuel = fuelCode();
+
         executor.execute(() -> {
             try {
-                String url = "https://www.opinet.co.kr/api/aroundAll.do?out=json&x=" + fmt(k[0]) + "&y=" + fmt(k[1]) +
-                        "&radius=5000&sort=1&prodcd=" + fuel + "&certkey=" + enc(key);
+                String apiBase = resolveApiBase();
+                if (apiBase.isEmpty()) throw new Exception("SERVER_PENDING");
+
+                // 약 110m 단위로 위치를 반올림해 서버 로그에 정밀 위치를 보내지 않습니다.
+                double lat = Math.round(currentLocation.getLatitude() * 1000.0) / 1000.0;
+                double lng = Math.round(currentLocation.getLongitude() * 1000.0) / 1000.0;
+                String url = apiBase + "/api/stations?lat=" +
+                        String.format(Locale.US, "%.3f", lat) + "&lng=" +
+                        String.format(Locale.US, "%.3f", lng) + "&fuel=" + enc(fuel);
+
                 JSONObject json = getJson(url);
-                List<Station> list = parseAround(json);
+                List<Station> list = parseServerStations(json);
                 synchronized (nearby) { nearby.clear(); nearby.addAll(list); }
                 runOnUiThread(() -> { progress.setVisibility(View.GONE); renderAll(); });
-                refreshMissingFavorites(key, fuel);
+                refreshMissingFavorites(apiBase, fuel);
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     progress.setVisibility(View.GONE);
-                    statusText.setText("가격 조회에 실패했습니다. API 키와 네트워크 상태를 확인해 주세요.\n" + safeMessage(e));
+                    String msg = "SERVER_PENDING".equals(e.getMessage())
+                            ? "가격 서버 연결 준비 중입니다. 앱 업데이트 없이 서버 연결 후 자동으로 활성화됩니다."
+                            : "가격 조회에 실패했습니다. 잠시 후 다시 시도해 주세요.\n" + safeMessage(e);
+                    statusText.setText(msg);
+                    recommendedBox.removeAllViews();
+                    favoritesBox.removeAllViews();
+                    listBox.removeAllViews();
+                    recommendedBox.addView(emptyCard(msg));
                 });
             }
         });
     }
 
-    private void refreshMissingFavorites(String key, String fuel) {
+    private String resolveApiBase() throws Exception {
+        String cached = prefs.getString("api_base", "").trim();
+        try {
+            JSONObject config = getJson(REMOTE_CONFIG_URL + "?v=" + System.currentTimeMillis());
+            String remote = config.optString("apiBase", "").trim();
+            if (!remote.isEmpty()) {
+                while (remote.endsWith("/")) remote = remote.substring(0, remote.length() - 1);
+                prefs.edit().putString("api_base", remote).apply();
+                return remote;
+            }
+        } catch (Exception ignored) {
+            // 네트워크 일시 오류 시 마지막으로 성공한 서버 주소를 사용합니다.
+        }
+        return cached;
+    }
+
+    private void refreshMissingFavorites(String apiBase, String fuel) {
         Set<String> ids = getFavoriteIds();
         Set<String> nearbyIds = new HashSet<>();
         synchronized (nearby) { for (Station s: nearby) nearbyIds.add(s.id); }
@@ -260,13 +285,12 @@ public class MainActivity extends Activity {
             if (nearbyIds.contains(id)) continue;
             executor.execute(() -> {
                 try {
-                    JSONObject json = getJson("https://www.opinet.co.kr/api/detailById.do?out=json&id="+enc(id)+"&certkey="+enc(key));
-                    Station s = parseDetail(json, fuel);
-                    if (s != null) {
-                        if (currentLocation != null) {
-                            double[] wgs = KatecConverter.katecToWgs84(s.kx, s.ky);
+                    JSONObject json = getJson(apiBase + "/api/station?id=" + enc(id) + "&fuel=" + enc(fuel));
+                    Station s = parseServerStation(json.optJSONObject("station"));
+                    if (s != null && s.price > 0) {
+                        if (currentLocation != null && s.lat != 0 && s.lng != 0) {
                             float[] d = new float[1];
-                            Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(), wgs[0], wgs[1], d);
+                            Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(), s.lat, s.lng, d);
                             s.distance = d[0];
                         }
                         synchronized (favoriteDetails) { favoriteDetails.put(id, s); }
@@ -277,44 +301,41 @@ public class MainActivity extends Activity {
         }
     }
 
-    private List<Station> parseAround(JSONObject json) throws Exception {
-        JSONArray oils = json.getJSONObject("RESULT").optJSONArray("OIL");
+    private List<Station> parseServerStations(JSONObject json) throws Exception {
+        JSONArray arr = json.optJSONArray("stations");
         List<Station> out = new ArrayList<>();
-        if (oils == null) return out;
-        for (int i=0;i<oils.length();i++) {
-            JSONObject o = oils.getJSONObject(i);
-            Station s = new Station();
-            s.id = o.optString("UNI_ID"); s.name = o.optString("OS_NM");
-            s.brand = o.optString("POLL_DIV_CO", o.optString("POLL_DIV_CD"));
-            s.price = o.optInt("PRICE", 0); s.distance = (float)o.optDouble("DISTANCE", 0);
-            s.kx = o.optDouble("GIS_X_COOR", 0); s.ky = o.optDouble("GIS_Y_COOR", 0);
-            if (!s.id.isEmpty() && s.price > 0) out.add(s);
+        if (arr == null) return out;
+        for (int i=0;i<arr.length();i++) {
+            Station station = parseServerStation(arr.getJSONObject(i));
+            if (station != null && station.price > 0) {
+                if (currentLocation != null && station.lat != 0 && station.lng != 0) {
+                    float[] d = new float[1];
+                    Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(), station.lat, station.lng, d);
+                    station.distance = d[0];
+                }
+                out.add(station);
+            }
         }
         return out;
     }
 
-    private Station parseDetail(JSONObject json, String wantedFuel) throws Exception {
-        JSONArray oils = json.getJSONObject("RESULT").optJSONArray("OIL");
-        if (oils == null || oils.length()==0) return null;
-        JSONObject o = oils.getJSONObject(0);
+    private Station parseServerStation(JSONObject o) {
+        if (o == null) return null;
         Station s = new Station();
-        s.id=o.optString("UNI_ID"); s.name=o.optString("OS_NM");
-        s.brand=o.optString("POLL_DIV_CO", o.optString("POLL_DIV_CD"));
-        s.address=o.optString("NEW_ADR", o.optString("VAN_ADR"));
-        s.kx=o.optDouble("GIS_X_COOR",0); s.ky=o.optDouble("GIS_Y_COOR",0);
-        Object p = o.opt("OIL_PRICE");
-        if (p instanceof JSONArray) {
-            JSONArray a=(JSONArray)p;
-            for(int i=0;i<a.length();i++) if(wantedFuel.equals(a.getJSONObject(i).optString("PRODCD"))) s.price=a.getJSONObject(i).optInt("PRICE",0);
-        } else if (p instanceof JSONObject) {
-            JSONObject po=(JSONObject)p; if(wantedFuel.equals(po.optString("PRODCD"))) s.price=po.optInt("PRICE",0);
-        }
-        return s.price>0?s:null;
+        s.id = o.optString("id");
+        s.name = o.optString("name");
+        s.brand = o.optString("brand");
+        s.address = o.optString("address");
+        s.price = o.optInt("price", 0);
+        s.distance = (float)o.optDouble("distance", 0);
+        s.lat = o.optDouble("lat", 0);
+        s.lng = o.optDouble("lng", 0);
+        return s.id.isEmpty() ? null : s;
     }
 
     private void renderAll() {
         renderRecommendation(); renderFavorites(); renderList();
-        statusText.setText(nearby.isEmpty() ? "반경 5km 안에서 판매가격이 확인된 주유소가 없습니다." : "오피넷 기준 · 반경 5km · " + nearby.size() + "곳");
+        statusText.setText(nearby.isEmpty() ? "반경 5km 안에서 판매가격이 확인된 주유소가 없습니다." : "오피넷 데이터 · 서버 캐시 5분 · 반경 5km · " + nearby.size() + "곳");
     }
 
     private void renderRecommendation() {
@@ -451,8 +472,7 @@ public class MainActivity extends Activity {
 
     private void openNaverMap(Station s) {
         try {
-            double[] wgs=KatecConverter.katecToWgs84(s.kx,s.ky);
-            String uri=String.format(Locale.US,"nmap://place?lat=%.7f&lng=%.7f&name=%s&appname=%s",wgs[0],wgs[1],enc(s.name),getPackageName());
+            String uri=String.format(Locale.US,"nmap://place?lat=%.7f&lng=%.7f&name=%s&appname=%s",s.lat,s.lng,enc(s.name),getPackageName());
             Intent i=new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
             i.setPackage("com.nhn.android.nmap");
             startActivity(i);
@@ -526,9 +546,9 @@ public class MainActivity extends Activity {
         tripRow.addView(round,new LinearLayout.LayoutParams(0,dp(44),1));
         box.addView(tripRow);
 
-        box.addView(text("오피넷 API 키",14,SUB,true));
-        EditText key=new EditText(this); key.setText(prefs.getString("api_key","")); key.setHint("인증키 입력"); key.setSingleLine(true); key.setInputType(InputType.TYPE_CLASS_TEXT); key.setPadding(dp(12),0,dp(12),0); key.setBackground(rounded(Color.rgb(243,245,246),12,Color.TRANSPARENT,0)); box.addView(key,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(50)));
-        TextView guide=text("추천은 주유비 + 이동 연료비의 실제 예상 지출로 계산합니다. 오피넷 키는 기기에만 저장됩니다.",12,SUB,false); guide.setPadding(0,dp(8),0,0);box.addView(guide);
+        TextView guide=text("주유 가격은 전용 서버가 오피넷에서 받아오므로 API 키 입력이 필요 없습니다. 추천은 주유비 + 이동 연료비의 예상 실질지출로 계산합니다.",12,SUB,false);
+        guide.setPadding(0,dp(2),0,0);
+        box.addView(guide);
         AlertDialog dlg=new AlertDialog.Builder(this).setTitle("설정").setView(box).setNegativeButton("취소",null).setNeutralButton("API 키 발급",null).setPositiveButton("저장",null).create();
         dlg.setOnShowListener(x->{
             dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.opinet.co.kr/user/custapi/custApiInfo.do"))));
@@ -537,7 +557,7 @@ public class MainActivity extends Activity {
                 double efficiencyValue = parsePositive(efficiencyInput.getText().toString(), 10.0);
                 prefs.edit()
                         .putString("fuel",selected[0])
-                        .putString("api_key",key.getText().toString().trim())
+                        .remove("api_key")
                         .putString("fill_liters",String.valueOf(litersValue))
                         .putString("efficiency",String.valueOf(efficiencyValue))
                         .putBoolean("round_trip",roundSelected[0])
@@ -552,7 +572,7 @@ public class MainActivity extends Activity {
 
     private JSONObject getJson(String urlText) throws Exception {
         HttpURLConnection c=(HttpURLConnection)new URL(urlText).openConnection();
-        c.setConnectTimeout(8000);c.setReadTimeout(8000);c.setRequestProperty("Accept","application/json");c.setRequestProperty("User-Agent","FuelPick/1.0");
+        c.setConnectTimeout(8000);c.setReadTimeout(8000);c.setRequestProperty("Accept","application/json");c.setRequestProperty("User-Agent","FuelPick/1.2");
         int code=c.getResponseCode(); InputStream in=(code>=200&&code<300)?c.getInputStream():c.getErrorStream();
         BufferedReader br=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8)); StringBuilder sb=new StringBuilder(); String line; while((line=br.readLine())!=null)sb.append(line);br.close();c.disconnect();
         if(code<200||code>=300)throw new Exception("HTTP "+code);
@@ -586,6 +606,9 @@ public class MainActivity extends Activity {
     private int dp(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
 
     private static final class Station {
-        String id="",name="",brand="",address=""; int price; float distance; double kx,ky;
+        String id="",name="",brand="",address="";
+        int price;
+        float distance;
+        double lat,lng;
     }
 }
