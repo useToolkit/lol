@@ -321,9 +321,35 @@ public class MainActivity extends Activity {
         recommendedBox.removeAllViews();
         Station best = bestStation();
         if (best == null) { recommendedBox.addView(emptyCard("추천할 주유소가 아직 없습니다.")); return; }
+
         LinearLayout c = stationCard(best, true, false);
-        TextView reason = text("가격 70% + 거리 30%를 함께 고려한 추천", 12, SUB, false);
-        reason.setPadding(dp(12), 0, dp(12), dp(12)); c.addView(reason);
+        double total = effectiveCost(best);
+        double travel = travelFuelCost(best);
+        Station nearest = nearestStation();
+        double saving = nearest == null ? 0 : effectiveCost(nearest) - total;
+
+        String trip = roundTrip() ? "왕복" : "편도";
+        String line1 = String.format(Locale.KOREA,
+                "%.0fL 주유 + %s 이동비 포함 · 예상 총비용 %s원",
+                fillLiters(), trip, new DecimalFormat("#,###").format(Math.round(total)));
+        TextView reason = text(line1, 12, SUB, false);
+        reason.setPadding(dp(12), 0, dp(12), dp(4));
+        c.addView(reason);
+
+        String line2;
+        if (saving >= 50) {
+            line2 = "가장 가까운 주유소 대비 약 " + new DecimalFormat("#,###").format(Math.round(saving)) + "원 절약 예상";
+        } else {
+            line2 = "단가와 이동 연료비를 합친 실질비용이 가장 낮습니다.";
+        }
+        TextView savingView = text(line2, 13, GREEN, true);
+        savingView.setPadding(dp(12), 0, dp(12), dp(4));
+        c.addView(savingView);
+
+        TextView calc = text("이동비 " + new DecimalFormat("#,###").format(Math.round(travel)) +
+                "원 추정 · 실연비 " + trimNumber(efficiency()) + "km/L 기준", 11, SUB, false);
+        calc.setPadding(dp(12), 0, dp(12), dp(12));
+        c.addView(calc);
         recommendedBox.addView(c, lpMatchWrap(0,8));
     }
 
@@ -331,16 +357,45 @@ public class MainActivity extends Activity {
         List<Station> copy;
         synchronized (nearby) { copy = new ArrayList<>(nearby); }
         if (copy.isEmpty()) return null;
-        int minP=Integer.MAX_VALUE,maxP=Integer.MIN_VALUE; float minD=Float.MAX_VALUE,maxD=0;
-        for(Station s:copy){ minP=Math.min(minP,s.price);maxP=Math.max(maxP,s.price);minD=Math.min(minD,s.distance);maxD=Math.max(maxD,s.distance); }
-        Station best=null; double bestScore=Double.MAX_VALUE;
-        for(Station s:copy){
-            double pn=maxP==minP?0:(s.price-minP)/(double)(maxP-minP);
-            double dn=maxD==minD?0:(s.distance-minD)/(double)(maxD-minD);
-            double score=.70*pn+.30*dn;
-            if(score<bestScore){bestScore=score;best=s;}
+        Station best = null;
+        double bestCost = Double.MAX_VALUE;
+        for (Station station : copy) {
+            double cost = effectiveCost(station);
+            if (cost < bestCost) {
+                bestCost = cost;
+                best = station;
+            }
         }
         return best;
+    }
+
+    private Station nearestStation() {
+        List<Station> copy;
+        synchronized (nearby) { copy = new ArrayList<>(nearby); }
+        if (copy.isEmpty()) return null;
+        return Collections.min(copy, Comparator.comparingDouble(a -> a.distance));
+    }
+
+    private double effectiveCost(Station station) {
+        return station.price * fillLiters() + travelFuelCost(station);
+    }
+
+    private double travelFuelCost(Station station) {
+        double km = station.distance / 1000.0;
+        if (roundTrip()) km *= 2.0;
+        return (km / Math.max(1.0, efficiency())) * localReferencePrice();
+    }
+
+    private double localReferencePrice() {
+        List<Integer> prices = new ArrayList<>();
+        synchronized (nearby) {
+            for (Station station : nearby) if (station.price > 0) prices.add(station.price);
+        }
+        if (prices.isEmpty()) return fuelCode().equals("D047") ? 1600.0 : 1700.0;
+        Collections.sort(prices);
+        int mid = prices.size() / 2;
+        if (prices.size() % 2 == 1) return prices.get(mid);
+        return (prices.get(mid - 1) + prices.get(mid)) / 2.0;
     }
 
     private void renderFavorites() {
@@ -416,13 +471,81 @@ public class MainActivity extends Activity {
         View.OnClickListener fuelClick=v->{selected[0]=(v==gas)?"B027":"D047"; styleButton(gas,selected[0].equals("B027")); styleButton(diesel,selected[0].equals("D047"));};
         gas.setOnClickListener(fuelClick);diesel.setOnClickListener(fuelClick);
         fr.addView(gas,new LinearLayout.LayoutParams(0,dp(46),1)); View gap=new View(this);fr.addView(gap,new LinearLayout.LayoutParams(dp(8),1)); fr.addView(diesel,new LinearLayout.LayoutParams(0,dp(46),1)); box.addView(fr);
+        box.addView(text("강력추천 계산",14,SUB,true));
+
+        LinearLayout inputs = row();
+        inputs.setPadding(0, dp(8), 0, dp(10));
+
+        LinearLayout litersWrap = new LinearLayout(this);
+        litersWrap.setOrientation(LinearLayout.VERTICAL);
+        litersWrap.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        litersWrap.addView(text("예상 주유량(L)",12,SUB,false));
+        EditText liters = new EditText(this);
+        liters.setText(trimNumber(fillLiters()));
+        liters.setHint("40");
+        liters.setSingleLine(true);
+        liters.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        liters.setPadding(dp(12),0,dp(12),0);
+        liters.setBackground(rounded(Color.rgb(243,245,246),12,Color.TRANSPARENT,0));
+        litersWrap.addView(liters,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(48)));
+        inputs.addView(litersWrap);
+
+        View inputGap = new View(this);
+        inputs.addView(inputGap,new LinearLayout.LayoutParams(dp(8),1));
+
+        LinearLayout efficiencyWrap = new LinearLayout(this);
+        efficiencyWrap.setOrientation(LinearLayout.VERTICAL);
+        efficiencyWrap.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        efficiencyWrap.addView(text("실연비(km/L)",12,SUB,false));
+        EditText efficiencyInput = new EditText(this);
+        efficiencyInput.setText(trimNumber(efficiency()));
+        efficiencyInput.setHint("10");
+        efficiencyInput.setSingleLine(true);
+        efficiencyInput.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        efficiencyInput.setPadding(dp(12),0,dp(12),0);
+        efficiencyInput.setBackground(rounded(Color.rgb(243,245,246),12,Color.TRANSPARENT,0));
+        efficiencyWrap.addView(efficiencyInput,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(48)));
+        inputs.addView(efficiencyWrap);
+        box.addView(inputs);
+
+        LinearLayout tripRow = row();
+        tripRow.setPadding(0,0,0,dp(18));
+        Button oneWay = button("편도", !roundTrip());
+        Button round = button("왕복", roundTrip());
+        final boolean[] roundSelected = {roundTrip()};
+        View.OnClickListener tripClick = v -> {
+            roundSelected[0] = v == round;
+            styleButton(oneWay, !roundSelected[0]);
+            styleButton(round, roundSelected[0]);
+        };
+        oneWay.setOnClickListener(tripClick);
+        round.setOnClickListener(tripClick);
+        tripRow.addView(oneWay,new LinearLayout.LayoutParams(0,dp(44),1));
+        View tripGap = new View(this);
+        tripRow.addView(tripGap,new LinearLayout.LayoutParams(dp(8),1));
+        tripRow.addView(round,new LinearLayout.LayoutParams(0,dp(44),1));
+        box.addView(tripRow);
+
         box.addView(text("오피넷 API 키",14,SUB,true));
         EditText key=new EditText(this); key.setText(prefs.getString("api_key","")); key.setHint("인증키 입력"); key.setSingleLine(true); key.setInputType(InputType.TYPE_CLASS_TEXT); key.setPadding(dp(12),0,dp(12),0); key.setBackground(rounded(Color.rgb(243,245,246),12,Color.TRANSPARENT,0)); box.addView(key,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(50)));
-        TextView guide=text("오피넷 일반 API 인증키를 한 번 저장하면 기기에만 보관됩니다.",12,SUB,false); guide.setPadding(0,dp(8),0,0);box.addView(guide);
+        TextView guide=text("추천은 주유비 + 이동 연료비의 실제 예상 지출로 계산합니다. 오피넷 키는 기기에만 저장됩니다.",12,SUB,false); guide.setPadding(0,dp(8),0,0);box.addView(guide);
         AlertDialog dlg=new AlertDialog.Builder(this).setTitle("설정").setView(box).setNegativeButton("취소",null).setNeutralButton("API 키 발급",null).setPositiveButton("저장",null).create();
         dlg.setOnShowListener(x->{
             dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://www.opinet.co.kr/user/custapi/custApiInfo.do"))));
-            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{prefs.edit().putString("fuel",selected[0]).putString("api_key",key.getText().toString().trim()).apply();fuelLabel.setText(fuelName());dlg.dismiss();requestLocationAndLoad();});
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+                double litersValue = parsePositive(liters.getText().toString(), 40.0);
+                double efficiencyValue = parsePositive(efficiencyInput.getText().toString(), 10.0);
+                prefs.edit()
+                        .putString("fuel",selected[0])
+                        .putString("api_key",key.getText().toString().trim())
+                        .putString("fill_liters",String.valueOf(litersValue))
+                        .putString("efficiency",String.valueOf(efficiencyValue))
+                        .putBoolean("round_trip",roundSelected[0])
+                        .apply();
+                fuelLabel.setText(fuelName());
+                dlg.dismiss();
+                requestLocationAndLoad();
+            });
         });
         dlg.show();
     }
@@ -438,6 +561,11 @@ public class MainActivity extends Activity {
 
     private String fuelCode(){return prefs.getString("fuel","B027");}
     private String fuelName(){return fuelCode().equals("D047")?"경유":"휘발유";}
+    private double fillLiters(){return parsePositive(prefs.getString("fill_liters","40"),40.0);}
+    private double efficiency(){return parsePositive(prefs.getString("efficiency","10"),10.0);}
+    private boolean roundTrip(){return prefs.getBoolean("round_trip",true);}
+    private static double parsePositive(String value,double fallback){try{double d=Double.parseDouble(value);return d>0?d:fallback;}catch(Exception e){return fallback;}}
+    private static String trimNumber(double d){if(Math.abs(d-Math.rint(d))<0.0001)return String.valueOf((long)Math.rint(d));return String.format(Locale.KOREA,"%.1f",d);}
     private static String brandName(String b){switch(b){case"SKE":return"SK에너지";case"GSC":return"GS칼텍스";case"HDO":return"HD현대오일뱅크";case"SOL":return"S-OIL";case"RTE":return"알뜰";case"RTX":return"고속도로알뜰";case"NHO":return"농협알뜰";default:return b==null||b.isEmpty()?"주유소":b;}}
     private static String distanceText(float m){return m<1000?Math.round(m)+"m":String.format(Locale.KOREA,"%.1fkm",m/1000f);}
     private static String safeMessage(Exception e){String s=e.getMessage();return s==null?e.getClass().getSimpleName():s;}
