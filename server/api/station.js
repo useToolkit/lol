@@ -1,4 +1,4 @@
-import { checkClient, katecToWgs, opinet, send, validateFuel } from "./_lib.js";
+import { checkClient, katecToWgs, opinet, send, validateFuel } from "../lib/opinet.js";
 
 export default async function handler(req,res){
   if(req.method!=="GET") return send(res,405,{error:"METHOD_NOT_ALLOWED"});
