@@ -14,10 +14,12 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_app"
-        android:label="주유소픽"
+        android:icon="@mipmap/ic_launcher"
+        android:label="oily"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
             android:exported="true">
