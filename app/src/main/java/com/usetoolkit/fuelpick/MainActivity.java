@@ -66,13 +66,16 @@ public class MainActivity extends Activity {
 
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
     private final List<Station> nearby = new ArrayList<>();
+    private final List<Station> nationwideResults = new ArrayList<>();
     private final Map<String, Station> favoriteDetails = new HashMap<>();
 
     private SharedPreferences prefs;
-    private LinearLayout root, content, favoritesBox, listBox, recommendedBox;
-    private TextView locationText, fuelLabel, statusText, sortPrice, sortDistance;
+    private LinearLayout root, content, favoritesBox, listBox, recommendedBox, pinnedBox;
+    private TextView locationText, fuelLabel, statusText, sortPrice, sortDistance, listSectionTitle;
     private EditText searchInput;
     private String searchQuery = "";
+    private boolean showingNationwideResults = false;
+    private Station pinnedStation;
     private ProgressBar progress;
     private Location currentLocation;
     private boolean sortByPrice = true;
@@ -176,11 +179,9 @@ public class MainActivity extends Activity {
 
         LinearLayout searchCard = card();
         searchCard.setPadding(dp(12), dp(8), dp(8), dp(8));
-        LinearLayout searchRow = row();
-        searchRow.setGravity(Gravity.CENTER_VERTICAL);
 
         searchInput = new EditText(this);
-        searchInput.setHint("주유소 이름 검색 · 반경 5km");
+        searchInput.setHint("주유소 이름 검색");
         searchInput.setSingleLine(true);
         searchInput.setTextSize(15);
         searchInput.setTextColor(TEXT);
@@ -188,26 +189,42 @@ public class MainActivity extends Activity {
         searchInput.setBackgroundColor(Color.TRANSPARENT);
         searchInput.setPadding(dp(4), 0, dp(8), 0);
         searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        searchInput.setLayoutParams(new LinearLayout.LayoutParams(0, dp(44), 1));
         searchInput.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
                 searchQuery = text == null ? "" : text.toString().trim();
+                showingNationwideResults = false;
+                listSectionTitle.setText("주변 주유소");
                 renderList();
             }
             @Override public void afterTextChanged(Editable s) {}
         });
-        searchRow.addView(searchInput);
+        searchCard.addView(searchInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
 
-        Button clearSearch = button("지우기", false);
+        LinearLayout searchActions = row();
+        searchActions.setPadding(0, dp(4), 0, 0);
+        Button nationwideSearch = button("전국검색", true);
+        nationwideSearch.setOnClickListener(v -> searchNationwide());
+        Button clearSearch = button("초기화", false);
         clearSearch.setOnClickListener(v -> {
+            showingNationwideResults = false;
+            synchronized (nationwideResults) { nationwideResults.clear(); }
             searchInput.setText("");
             searchInput.clearFocus();
+            listSectionTitle.setText("주변 주유소");
+            renderList();
         });
-        searchRow.addView(clearSearch, new LinearLayout.LayoutParams(dp(68), dp(40)));
+        searchActions.addView(nationwideSearch, new LinearLayout.LayoutParams(0, dp(42), 1));
+        searchActions.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
+        searchActions.addView(clearSearch, new LinearLayout.LayoutParams(0, dp(42), 1));
+        searchCard.addView(searchActions);
 
-        searchCard.addView(searchRow);
-        root.addView(searchCard, lpMatchWrap(0, 8));
+        root.addView(searchCard, lpMatchWrap(0, 6));
+
+        pinnedBox = new LinearLayout(this);
+        pinnedBox.setOrientation(LinearLayout.VERTICAL);
+        pinnedBox.setVisibility(View.GONE);
+        root.addView(pinnedBox, lpMatchWrap(0, 6));
 
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(true);
@@ -231,7 +248,7 @@ public class MainActivity extends Activity {
         favoritesBox.setOrientation(LinearLayout.VERTICAL);
         content.addView(favoritesBox);
 
-        sectionTitle("주변 주유소");
+        listSectionTitle = sectionTitle("주변 주유소");
         listBox = new LinearLayout(this);
         listBox.setOrientation(LinearLayout.VERTICAL);
         content.addView(listBox);
@@ -245,10 +262,11 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
-    private void sectionTitle(String s) {
+    private TextView sectionTitle(String s) {
         TextView t = text(s, 16, TEXT, true);
         t.setPadding(dp(2), dp(10), 0, dp(8));
         content.addView(t);
+        return t;
     }
 
     private void requestLocationAndLoad(boolean forceRefresh) {
@@ -327,6 +345,7 @@ public class MainActivity extends Activity {
             progress.setVisibility(View.GONE);
             renderAll();
             refreshMissingFavorites(key, fuelCode());
+            restorePinnedStation(key, fuelCode());
             return;
         }
 
@@ -354,6 +373,7 @@ public class MainActivity extends Activity {
                     renderAll();
                 });
                 refreshMissingFavorites(key, fuel);
+                restorePinnedStation(key, fuel);
             } catch (Exception e) {
                 runOnUiThread(() -> {
                     progress.setVisibility(View.GONE);
@@ -519,6 +539,7 @@ public class MainActivity extends Activity {
 
     private void renderAll() {
         renderRecommendation();
+        renderPinned();
         renderFavorites();
         renderList();
         if (nearby.isEmpty()) {
@@ -632,7 +653,18 @@ public class MainActivity extends Activity {
         }
 
         favs.sort(Comparator.comparingInt(a -> a.price));
-        for (Station s : favs) favoritesBox.addView(stationCard(s, false), lpMatchWrap(0, 8));
+        for (Station station : favs) {
+            LinearLayout card = stationCard(station, false);
+            String diff = priceDiffText(station);
+            if (!diff.isEmpty()) {
+                TextView diffView = text(diff, 13,
+                        diff.startsWith("-") ? GREEN : (diff.startsWith("+") ? Color.rgb(220, 70, 70) : SUB),
+                        true);
+                diffView.setPadding(0, dp(8), 0, 0);
+                card.addView(diffView);
+            }
+            favoritesBox.addView(card, lpMatchWrap(0, 8));
+        }
         if (favs.size() < ids.size()) {
             favoritesBox.addView(text("일부 즐겨찾기 가격을 갱신 중입니다…", 12, SUB, false));
         }
@@ -640,41 +672,91 @@ public class MainActivity extends Activity {
 
     private void renderList() {
         listBox.removeAllViews();
+
+        if (showingNationwideResults) {
+            List<Station> results;
+            synchronized (nationwideResults) { results = new ArrayList<>(nationwideResults); }
+            results.sort(Comparator.comparingDouble(a -> a.distance));
+
+            if (results.isEmpty()) {
+                listBox.addView(emptyCard("전국 검색 결과가 없습니다."));
+                return;
+            }
+
+            for (Station station : results) {
+                listBox.addView(searchResultCard(station), lpMatchWrap(0, 8));
+            }
+            return;
+        }
+
         List<Station> copy;
         synchronized (nearby) { copy = new ArrayList<>(nearby); }
 
         String q = normalizeSearch(searchQuery);
         if (!q.isEmpty()) {
             List<Station> filtered = new ArrayList<>();
-            for (Station s : copy) {
-                String name = normalizeSearch(s.name);
-                String brand = normalizeSearch(brandName(s.brand));
-                if (name.contains(q) || brand.contains(q)) filtered.add(s);
+            for (Station station : copy) {
+                String name = normalizeSearch(station.name);
+                String brand = normalizeSearch(brandName(station.brand));
+                if (name.contains(q) || brand.contains(q)) filtered.add(station);
             }
             copy = filtered;
         }
 
         if (sortByPrice) {
-            copy.sort(Comparator.comparingInt((Station s) -> s.price).thenComparingDouble(s -> s.distance));
+            copy.sort(Comparator.comparingInt((Station station) -> station.price).thenComparingDouble(station -> station.distance));
         } else {
-            copy.sort(Comparator.comparingDouble((Station s) -> s.distance).thenComparingInt(s -> s.price));
+            copy.sort(Comparator.comparingDouble((Station station) -> station.distance).thenComparingInt(station -> station.price));
         }
 
-        for (Station s : copy) {
-            listBox.addView(stationCard(s, false), lpMatchWrap(0, 8));
+        for (Station station : copy) {
+            listBox.addView(stationCard(station, false), lpMatchWrap(0, 8));
         }
 
         if (!searchQuery.isEmpty() && copy.isEmpty()) {
             listBox.addView(infoCard(
                     "반경 5km 안에서는 ‘" + searchQuery + "’ 검색 결과가 없습니다.",
-                    "네이버지도에서 검색",
-                    () -> openNaverSearch(searchQuery)
+                    "전국에서 검색",
+                    this::searchNationwide
             ), lpMatchWrap(0, 8));
         } else if (!searchQuery.isEmpty()) {
-            TextView count = text("검색 결과 " + copy.size() + "곳", 12, SUB, false);
+            TextView count = text("주변 검색 결과 " + copy.size() + "곳", 12, SUB, false);
             count.setPadding(dp(4), 0, 0, dp(8));
             listBox.addView(count, 0);
         }
+    }
+
+    private LinearLayout searchResultCard(Station station) {
+        LinearLayout c = card();
+        LinearLayout top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView name = text(station.name, 16, TEXT, true);
+        name.setMaxLines(1);
+        info.addView(name);
+        String meta = brandName(station.brand) + " · " + distanceText(station.distance);
+        info.addView(text(meta, 12, SUB, false));
+        if (station.address != null && !station.address.isEmpty()) {
+            TextView address = text(station.address, 12, SUB, false);
+            address.setMaxLines(1);
+            info.addView(address);
+        }
+        top.addView(info);
+
+        Button compare = button("비교", true);
+        compare.setOnClickListener(v -> selectComparisonStation(station));
+        top.addView(compare);
+        c.addView(top);
+
+        Button map = button("네이버지도", false);
+        map.setOnClickListener(v -> openNaverMap(station));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        mlp.topMargin = dp(8);
+        c.addView(map, mlp);
+        return c;
     }
 
     private static String normalizeSearch(String value) {
@@ -684,6 +766,213 @@ public class MainActivity extends Activity {
                 .replace("-", "")
                 .replace("㈜", "")
                 .replace("(주)", "");
+    }
+
+    private void searchNationwide() {
+        String query = searchInput == null ? "" : searchInput.getText().toString().trim();
+        if (query.length() < 2) {
+            Toast.makeText(this, "전국검색은 주유소 이름을 2글자 이상 입력해 주세요.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String key = prefs.getString("api_key", "").trim();
+        if (key.isEmpty()) {
+            Toast.makeText(this, "먼저 오피넷 API 인증키를 설정해 주세요.", Toast.LENGTH_SHORT).show();
+            showSettings();
+            return;
+        }
+
+        progress.setVisibility(View.VISIBLE);
+        statusText.setText("전국에서 ‘" + query + "’ 검색 중…");
+
+        executor.execute(() -> {
+            try {
+                JSONObject json = getJson("https://www.opinet.co.kr/api/searchByName.do?out=json&osnm=" +
+                        enc(query) + "&code=" + enc(key));
+                List<Station> results = parseNameSearch(json);
+                synchronized (nationwideResults) {
+                    nationwideResults.clear();
+                    nationwideResults.addAll(results);
+                }
+                runOnUiThread(() -> {
+                    progress.setVisibility(View.GONE);
+                    showingNationwideResults = true;
+                    listSectionTitle.setText("전국 검색 결과");
+                    statusText.setText("전국 검색 결과 · " + results.size() + "곳 · 비교할 주유소를 선택하세요.");
+                    renderList();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    progress.setVisibility(View.GONE);
+                    statusText.setText("전국 검색에 실패했습니다.\n" + safeMessage(e));
+                });
+            }
+        });
+    }
+
+    private List<Station> parseNameSearch(JSONObject json) throws Exception {
+        JSONArray oils = json.getJSONObject("RESULT").optJSONArray("OIL");
+        List<Station> out = new ArrayList<>();
+        if (oils == null) return out;
+
+        for (int i = 0; i < oils.length(); i++) {
+            JSONObject o = oils.getJSONObject(i);
+            String lpg = o.optString("LPG_YN", "N");
+            if ("Y".equals(lpg)) continue;
+
+            Station station = new Station();
+            station.id = o.optString("UNI_ID");
+            station.name = o.optString("OS_NM");
+            station.brand = o.optString("POLL_DIV_CD", o.optString("POLL_DIV_CO"));
+            station.address = o.optString("NEW_ADR", o.optString("VAN_ADR"));
+            station.kx = o.optDouble("GIS_X_COOR", 0);
+            station.ky = o.optDouble("GIS_Y_COOR", 0);
+
+            if (currentLocation != null && station.kx != 0 && station.ky != 0) {
+                double[] wgs = KatecConverter.katecToWgs84(station.kx, station.ky);
+                float[] d = new float[1];
+                Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(),
+                        wgs[0], wgs[1], d);
+                station.distance = d[0];
+            }
+
+            if (!station.id.isEmpty()) out.add(station);
+        }
+        return out;
+    }
+
+    private void selectComparisonStation(Station station) {
+        String key = prefs.getString("api_key", "").trim();
+        if (key.isEmpty()) return;
+
+        if (station.price > 0) {
+            setPinnedStation(station);
+            return;
+        }
+
+        progress.setVisibility(View.VISIBLE);
+        statusText.setText(station.name + " 가격 확인 중…");
+        executor.execute(() -> {
+            try {
+                JSONObject json = getJson("https://www.opinet.co.kr/api/detailById.do?out=json&id=" +
+                        enc(station.id) + "&code=" + enc(key));
+                Station detail = parseDetail(json, fuelCode());
+                if (detail == null) throw new Exception("선택한 유종의 가격 정보 없음");
+
+                if (currentLocation != null && detail.kx != 0 && detail.ky != 0) {
+                    double[] wgs = KatecConverter.katecToWgs84(detail.kx, detail.ky);
+                    float[] d = new float[1];
+                    Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(),
+                            wgs[0], wgs[1], d);
+                    detail.distance = d[0];
+                }
+
+                runOnUiThread(() -> {
+                    progress.setVisibility(View.GONE);
+                    setPinnedStation(detail);
+                    statusText.setText("비교 기준으로 고정했습니다.");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    progress.setVisibility(View.GONE);
+                    Toast.makeText(this, "가격을 확인할 수 없습니다: " + safeMessage(e), Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+    }
+
+    private void setPinnedStation(Station station) {
+        pinnedStation = station;
+        prefs.edit().putString("compare_station_id", station.id).apply();
+        renderPinned();
+        renderFavorites();
+    }
+
+    private void restorePinnedStation(String key, String fuel) {
+        String id = prefs.getString("compare_station_id", "").trim();
+        if (id.isEmpty()) return;
+
+        synchronized (nearby) {
+            for (Station station : nearby) {
+                if (id.equals(station.id)) {
+                    pinnedStation = station;
+                    runOnUiThread(() -> {
+                        renderPinned();
+                        renderFavorites();
+                    });
+                    return;
+                }
+            }
+        }
+
+        executor.execute(() -> {
+            try {
+                JSONObject json = getJson("https://www.opinet.co.kr/api/detailById.do?out=json&id=" +
+                        enc(id) + "&code=" + enc(key));
+                Station detail = parseDetail(json, fuel);
+                if (detail == null) return;
+
+                if (currentLocation != null && detail.kx != 0 && detail.ky != 0) {
+                    double[] wgs = KatecConverter.katecToWgs84(detail.kx, detail.ky);
+                    float[] d = new float[1];
+                    Location.distanceBetween(currentLocation.getLatitude(), currentLocation.getLongitude(),
+                            wgs[0], wgs[1], d);
+                    detail.distance = d[0];
+                }
+
+                pinnedStation = detail;
+                runOnUiThread(() -> {
+                    renderPinned();
+                    renderFavorites();
+                });
+            } catch (Exception ignored) {}
+        });
+    }
+
+    private void renderPinned() {
+        if (pinnedBox == null) return;
+        pinnedBox.removeAllViews();
+
+        if (pinnedStation == null) {
+            pinnedBox.setVisibility(View.GONE);
+            return;
+        }
+
+        pinnedBox.setVisibility(View.VISIBLE);
+        LinearLayout c = card();
+        c.setBackground(rounded(Color.WHITE, 16, GREEN, 2));
+
+        LinearLayout top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        info.addView(text("비교 기준", 11, GREEN, true));
+        TextView name = text(pinnedStation.name, 16, TEXT, true);
+        name.setMaxLines(1);
+        info.addView(name);
+        info.addView(text(distanceText(pinnedStation.distance) + " · " +
+                new DecimalFormat("#,###").format(pinnedStation.price) + "원/L", 13, SUB, false));
+        top.addView(info);
+
+        Button clear = button("해제", false);
+        clear.setOnClickListener(v -> {
+            pinnedStation = null;
+            prefs.edit().remove("compare_station_id").apply();
+            renderPinned();
+            renderFavorites();
+        });
+        top.addView(clear);
+        c.addView(top);
+        pinnedBox.addView(c);
+    }
+
+    private String priceDiffText(Station station) {
+        if (pinnedStation == null || pinnedStation.price <= 0 || station.price <= 0) return "";
+        int diff = station.price - pinnedStation.price;
+        if (station.id.equals(pinnedStation.id)) return "비교 기준과 동일";
+        if (diff == 0) return "비교 기준과 같은 가격";
+        return (diff > 0 ? "+" : "") + new DecimalFormat("#,###").format(diff) + "원/L";
     }
 
     private LinearLayout stationCard(Station s, boolean recommended) {
@@ -943,7 +1232,7 @@ public class MainActivity extends Activity {
         c.setConnectTimeout(7000);
         c.setReadTimeout(7000);
         c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("User-Agent", "oily/1.4");
+        c.setRequestProperty("User-Agent", "oily/1.5");
         int code = c.getResponseCode();
         InputStream in = (code >= 200 && code < 300) ? c.getInputStream() : c.getErrorStream();
         BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
