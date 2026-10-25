@@ -1,0 +1,42 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.usetoolkit.iphoto'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.usetoolkit.iphoto'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+    }
+    buildTypes {
+        debug {
+            debuggable true
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    packaging {
+        resources { excludes += ['META-INF/AL2.0', 'META-INF/LGPL2.1'] }
+    }
+}
+
+dependencies {
+    def camerax = '1.6.2'
+    implementation "androidx.camera:camera-core:$camerax"
+    implementation "androidx.camera:camera-camera2:$camerax"
+    implementation "androidx.camera:camera-lifecycle:$camerax"
+    implementation "androidx.camera:camera-view:$camerax"
+    implementation "androidx.camera:camera-video:$camerax"
+    implementation 'androidx.camera.media3:media3-effect:1.0.0-alpha04'
+    implementation 'androidx.media3:media3-effect:1.8.1'
+    implementation 'androidx.activity:activity:1.10.1'
+    implementation 'androidx.core:core:1.16.0'
+}
