@@ -1,0 +1,62 @@
+name: Build I photo APK
+
+on:
+  push:
+    branches: ['i-photo']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack I photo source
+        run: |
+          base64 -d I-photo-src.tar.xz.b64 > /tmp/I-photo-src.tar.xz
+          tar -xJf /tmp/I-photo-src.tar.xz --strip-components=1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Build I photo debug APK
+        run: gradle --no-daemon :app:assembleDebug --stacktrace
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk I-photo-v1.0.0.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: I-photo-APK
+          path: I-photo-v1.0.0.apk
+          retention-days: 90
+      - name: Publish source tree to i-photo branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f I-photo-src.tar.xz.b64 || true
+          git add README.md .github app build.gradle settings.gradle gradle.properties gradle .gitignore
+          git diff --cached --quiet || (git commit -m 'Publish I photo source [skip ci]' && git push origin HEAD:i-photo)
+      - name: Publish APK direct download
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/iphoto-apk
+          cp I-photo-v1.0.0.apk /tmp/iphoto-apk
+          cd /tmp/iphoto-apk
+          git init -q
+          git checkout -qb i-photo-apk
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add I-photo-v1.0.0.apk
+          git commit -qm 'Publish I photo APK'
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push -f origin i-photo-apk
