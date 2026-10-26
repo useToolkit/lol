@@ -46,6 +46,10 @@ import androidx.camera.view.LifecycleCameraController;
 import androidx.camera.view.PreviewView;
 import androidx.camera.view.video.AudioConfig;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.text.SimpleDateFormat;
 import java.util.Collections;
@@ -103,6 +107,10 @@ public final class MainActivity extends ComponentActivity {
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(INK);
         getWindow().setNavigationBarColor(INK);
+        // Android 15/16+ enforces edge-to-edge for targetSdk 35.
+        // Draw the background beneath the bars, but keep touch controls within
+        // the actual status/navigation/cutout safe area.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
         boolean validRatio = false;
         for (String r : RATIOS) if (r.equals(frameRatio)) validRatio = true;
@@ -154,6 +162,25 @@ public final class MainActivity extends ComponentActivity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(INK);
         setContentView(root);
+        // FrameLayout padding is honored by ALL gravity-based children, so
+        // top labels, AF/settings buttons, shutter and mode tabs remain above
+        // system navigation, without reducing the preview unnecessarily.
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
+            Insets safe = windowInsets.getInsets(
+                WindowInsetsCompat.Type.systemBars() |
+                WindowInsetsCompat.Type.displayCutout());
+            int left = Math.max(0, safe.left);
+            int top = Math.max(0, safe.top);
+            int right = Math.max(0, safe.right);
+            int bottom = Math.max(0, safe.bottom);
+            if (view.getPaddingLeft() != left || view.getPaddingTop() != top + dp(4) ||
+                view.getPaddingRight() != right || view.getPaddingBottom() != bottom + dp(6)) {
+                view.setPadding(left, top + dp(4), right, bottom + dp(6));
+                view.post(this::updateCaptureFrame);
+            }
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(root);
 
         // True WYSIWYG preview: camera content extends behind the shutter controls.
         // Only the ratio-matched PreviewView is bound to CameraX's ViewPort.

@@ -11,7 +11,7 @@
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.3.0.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.3.1.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
@@ -47,6 +47,13 @@ gradle :app:assembleDebug
 ## 오픈소스 라이선스
 
 AndroidX CameraX, Media3, Activity, Core 등의 라이브러리 사용 (Apache-2.0). 앱 코드 자체는 사용자의 개인 프로젝트입니다.
+
+## v1.3.1 — system bar layout correction
+- Handle Android 15+ edge-to-edge system insets explicitly with WindowInsetsCompat.
+- Top app branding, AF lock, flash, and settings start BELOW the status bar/camera hole cutout.
+- Mode tabs and shutter actions stay ABOVE the gesture/3-button navigation bar.
+- Adds small touch-safe spacing at top and bottom while retaining large preview.
+- No LUT, focus, ratio, or recording behavior changes in this patch.
 
 ## v1.3 — AF lock
 - Tap on the camera preview to focus on a chosen area.

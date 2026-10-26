@@ -32,12 +32,12 @@ jobs:
       - name: Compile APK
         run: gradle --no-daemon :app:assembleDebug --stacktrace
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk I-photo-v1.3.0.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk I-photo-v1.3.1.apk
       - name: Upload installation package
         uses: actions/upload-artifact@v4
         with:
           name: I-photo-APK
-          path: I-photo-v1.3.0.apk
+          path: I-photo-v1.3.1.apk
           retention-days: 90
       - name: Publish direct-download branch
         if: github.ref == 'refs/heads/i-photo'
@@ -45,13 +45,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/iphoto-publish
-          cp I-photo-v1.3.0.apk /tmp/iphoto-publish/
+          cp I-photo-v1.3.1.apk /tmp/iphoto-publish/
           cd /tmp/iphoto-publish
           git init -q
           git checkout -qb i-photo-apk
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add I-photo-v1.3.0.apk
+          git add I-photo-v1.3.1.apk
           git commit -qm 'Publish latest I photo debug APK'
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin i-photo-apk
