@@ -11,7 +11,7 @@
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.1.0.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.2.0.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
@@ -47,3 +47,10 @@ gradle :app:assembleDebug
 ## 오픈소스 라이선스
 
 AndroidX CameraX, Media3, Activity, Core 등의 라이브러리 사용 (Apache-2.0). 앱 코드 자체는 사용자의 개인 프로젝트입니다.
+
+## v1.2.0: 몰입형 촬영 화면
+- 삼성 기본 카메라 참고: 미리보기를 최대화하고 셔터/모드/줌을 카메라 화면 위에 오버레이
+- 비율은 상단 오른쪽 ⚙ 설정에서 변경 (4:3, 9:16, 1:1, 3:2), 기본값 9:16
+- 카메라 화면에서 비율 버튼 제거, 필터 강도/노출/격자도 설정 패널로 이동
+- 기존 4가지 시네마틱 룩 유지, 실제 사진/영상 미리보기 비율은 CameraX ViewPort로 연동
+- 기존 설치와 업데이트 서명이 달라 설치 충돌이 날 수 있음. 충돌 시 기존 앱 제거 후 재설치
