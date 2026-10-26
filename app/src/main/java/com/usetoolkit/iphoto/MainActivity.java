@@ -61,6 +61,12 @@ public final class MainActivity extends ComponentActivity {
     private ActivityResultLauncher<String[]> permissions;
     private LifecycleCameraController controller;
     private PreviewView preview;
+    private FrameLayout previewStage, previewFrame;
+    private LinearLayout bottomControls;
+    private FrameGuide frameGuide;
+    private TextView[] ratioButtons;
+    private String frameRatio = "4:3";
+    private static final String[] RATIOS = {"4:3", "9:16", "1:1", "3:2"};
     private Media3Effect media3;
     private Recording recording;
     private Uri lastMedia;
@@ -90,6 +96,10 @@ public final class MainActivity extends ComponentActivity {
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(INK);
         getWindow().setNavigationBarColor(INK);
+        frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "4:3");
+        boolean validRatio = false;
+        for (String r : RATIOS) if (r.equals(frameRatio)) validRatio = true;
+        if (!validRatio) frameRatio = "4:3";
         buildInterface();
         permissions = registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
             Boolean granted = result.get(Manifest.permission.CAMERA);
@@ -133,26 +143,35 @@ public final class MainActivity extends ComponentActivity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(INK);
         setContentView(root);
+        // Only the framed preview is recorded. Black matte outside is NOT captured.
+        previewStage = new FrameLayout(this);
+        root.addView(previewStage, new FrameLayout.LayoutParams(-1, -1));
+        previewFrame = new FrameLayout(this);
+        previewFrame.setBackgroundColor(0xFF161A1E);
+        previewStage.addView(previewFrame, new FrameLayout.LayoutParams(dp(280), dp(375), Gravity.CENTER));
         preview = new PreviewView(this);
         preview.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
         preview.setScaleType(PreviewView.ScaleType.FILL_CENTER);
-        root.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+        previewFrame.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+        grid = new GridOverlay();
+        grid.setVisibility(View.GONE);
+        previewFrame.addView(grid, new FrameLayout.LayoutParams(-1, -1));
+        frameGuide = new FrameGuide();
+        previewFrame.addView(frameGuide, new FrameLayout.LayoutParams(-1, -1));
+        previewStage.addOnLayoutChangeListener((v, left, top, right, b, ol, ot, or, ob) ->
+            updateCaptureFrame());
 
         View shadeTop = new View(this);
         shadeTop.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
             new int[] {0xDD090B0E, 0x88090B0E, Color.TRANSPARENT}));
-        FrameLayout.LayoutParams shadeTopLp = new FrameLayout.LayoutParams(-1, dp(175), Gravity.TOP);
+        FrameLayout.LayoutParams shadeTopLp = new FrameLayout.LayoutParams(-1, dp(72), Gravity.TOP);
         root.addView(shadeTop, shadeTopLp);
 
         View shadeBottom = new View(this);
         shadeBottom.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
             new int[] {0xF9080A0D, 0xF4080A0D, 0xBF080A0D, Color.TRANSPARENT}));
-        FrameLayout.LayoutParams shadeBottomLp = new FrameLayout.LayoutParams(-1, dp(354), Gravity.BOTTOM);
+        FrameLayout.LayoutParams shadeBottomLp = new FrameLayout.LayoutParams(-1, dp(265), Gravity.BOTTOM);
         root.addView(shadeBottom, shadeBottomLp);
-
-        grid = new GridOverlay();
-        grid.setVisibility(View.GONE);
-        root.addView(grid, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout top = new LinearLayout(this);
         top.setPadding(dp(23), dp(16), dp(23), 0);
@@ -180,20 +199,41 @@ public final class MainActivity extends ComponentActivity {
         top.addView(gridButton, gp);
         gridButton.setOnClickListener(v -> grid.setVisibility(grid.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
 
+        LinearLayout ratioRow = new LinearLayout(this);
+        ratioRow.setGravity(Gravity.CENTER);
+        FrameLayout.LayoutParams rr = new FrameLayout.LayoutParams(-1, dp(42), Gravity.TOP);
+        rr.topMargin = dp(75);
+        root.addView(ratioRow, rr);
+        ratioButtons = new TextView[RATIOS.length];
+        for (int i = 0; i < RATIOS.length; i++) {
+            final String ratio = RATIOS[i];
+            TextView choice = label(ratio, 12, WHITE, Typeface.BOLD);
+            choice.setGravity(Gravity.CENTER);
+            choice.setContentDescription("촬영 비율 " + ratio);
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(dp(69), dp(34));
+            rp.setMargins(dp(3), 0, dp(3), 0);
+            ratioRow.addView(choice, rp);
+            ratioButtons[i] = choice;
+            choice.setOnClickListener(v -> selectRatio(ratio));
+        }
+        updateRatioButtons();
+
         info = label("LUXURY NIGHT • CAMERA", 10, WHITE, Typeface.BOLD);
         info.setLetterSpacing(.13f);
         info.setGravity(Gravity.CENTER);
-        info.setBackground(shape(0x70000000, dp(20), 0, 0));
-        FrameLayout.LayoutParams infoLp = new FrameLayout.LayoutParams(dp(245), dp(31), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        infoLp.topMargin = dp(85);
+        info.setBackground(shape(0xC414181C, dp(20), 0, 0));
+        FrameLayout.LayoutParams infoLp = new FrameLayout.LayoutParams(dp(265), dp(29), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        infoLp.topMargin = dp(119);
         root.addView(info, infoLp);
 
         LinearLayout bottom = new LinearLayout(this);
-        bottom.setPadding(dp(18), dp(10), dp(18), dp(12));
+        bottomControls = bottom;
+        bottom.setPadding(dp(15), dp(8), dp(15), dp(8));
         bottom.setOrientation(LinearLayout.VERTICAL);
         bottom.setGravity(Gravity.CENTER_HORIZONTAL);
         FrameLayout.LayoutParams bottomLp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
         root.addView(bottom, bottomLp);
+        bottom.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> updateStageBounds());
 
         TextView section = label("SIGNATURE LOOKS", 10, GOLD, Typeface.BOLD);
         section.setLetterSpacing(.21f);
@@ -202,7 +242,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout presetRow = new LinearLayout(this);
         presetRow.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams pr = new LinearLayout.LayoutParams(-1, dp(48));
+        LinearLayout.LayoutParams pr = new LinearLayout.LayoutParams(-1, dp(42));
         pr.topMargin = dp(6);
         bottom.addView(presetRow, pr);
         ColorLooks.Look[] looks = ColorLooks.Look.values();
@@ -221,11 +261,16 @@ public final class MainActivity extends ComponentActivity {
             b.setOnClickListener(v -> selectLook(look));
         }
 
+        // Keep advanced sliders collapsed so the real capture area stays large.
+        LinearLayout adjustments = new LinearLayout(this);
+        adjustments.setOrientation(LinearLayout.VERTICAL);
+        adjustments.setVisibility(View.GONE);
+        bottom.addView(adjustments, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout adjustRow = new LinearLayout(this);
         adjustRow.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, dp(37));
         ap.topMargin = dp(2);
-        bottom.addView(adjustRow, ap);
+        adjustments.addView(adjustRow, ap);
         TextView filterLabel = label("필터", 12, MUTED, Typeface.NORMAL);
         adjustRow.addView(filterLabel, new LinearLayout.LayoutParams(dp(42), -2));
         strengthSeek = new SeekBar(this);
@@ -247,7 +292,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout exposureRow = new LinearLayout(this);
         exposureRow.setGravity(Gravity.CENTER_VERTICAL);
-        bottom.addView(exposureRow, new LinearLayout.LayoutParams(-1, dp(35)));
+        adjustments.addView(exposureRow, new LinearLayout.LayoutParams(-1, dp(35)));
         exposureRow.addView(label("노출", 12, MUTED, Typeface.NORMAL), new LinearLayout.LayoutParams(dp(42), -2));
         exposureSeek = new SeekBar(this);
         exposureSeek.setMax(40);
@@ -270,7 +315,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout tools = new LinearLayout(this);
         tools.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-1, dp(40));
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-1, dp(37));
         tl.topMargin = dp(2);
         bottom.addView(tools, tl);
         TextView compare = label("원본 비교 (누르고 있기)", 11, MUTED, Typeface.NORMAL);
@@ -294,10 +339,18 @@ public final class MainActivity extends ComponentActivity {
         zoom2.setGravity(Gravity.CENTER);
         zoom2.setOnClickListener(v -> setZoom(2f));
         tools.addView(zoom2, new LinearLayout.LayoutParams(dp(40), dp(35)));
+        TextView adjustToggle = label("보정 +", 12, GOLD, Typeface.BOLD);
+        adjustToggle.setGravity(Gravity.CENTER);
+        tools.addView(adjustToggle, new LinearLayout.LayoutParams(dp(62), dp(35)));
+        adjustToggle.setOnClickListener(v -> {
+            boolean open = adjustments.getVisibility() != View.VISIBLE;
+            adjustments.setVisibility(open ? View.VISIBLE : View.GONE);
+            adjustToggle.setText(open ? "보정 −" : "보정 +");
+        });
 
         LinearLayout modes = new LinearLayout(this);
         modes.setGravity(Gravity.CENTER);
-        bottom.addView(modes, new LinearLayout.LayoutParams(-1, dp(37)));
+        bottom.addView(modes, new LinearLayout.LayoutParams(-1, dp(34)));
         modePhoto = label("사진", 14, GOLD, Typeface.BOLD);
         modePhoto.setGravity(Gravity.CENTER);
         modes.addView(modePhoto, new LinearLayout.LayoutParams(dp(72), dp(33)));
@@ -309,7 +362,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout shutterRow = new LinearLayout(this);
         shutterRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams sr = new LinearLayout.LayoutParams(-1, dp(94));
+        LinearLayout.LayoutParams sr = new LinearLayout.LayoutParams(-1, dp(82));
         bottom.addView(shutterRow, sr);
         TextView gallery = label("최근 사진 ↗", 12, WHITE, Typeface.NORMAL);
         gallery.setGravity(Gravity.CENTER);
@@ -333,10 +386,89 @@ public final class MainActivity extends ComponentActivity {
 
         recordTimer = label("", 13, WHITE, Typeface.BOLD);
         recordTimer.setGravity(Gravity.CENTER);
-        bottom.addView(recordTimer, new LinearLayout.LayoutParams(-1, dp(24)));
+        bottom.addView(recordTimer, new LinearLayout.LayoutParams(-1, dp(20)));
         captureLabel = label("사진과 영상에 동일한 색감을 적용합니다", 10, MUTED, Typeface.NORMAL);
         captureLabel.setGravity(Gravity.CENTER);
-        bottom.addView(captureLabel, new LinearLayout.LayoutParams(-1, dp(18)));
+        bottom.addView(captureLabel, new LinearLayout.LayoutParams(-1, dp(17)));
+        root.post(this::updateStageBounds);
+    }
+
+    private void selectRatio(String ratio) {
+        if (busy || recording != null) {
+            showMessage("촬영 중에는 화면 비율을 바꿀 수 없습니다.");
+            return;
+        }
+        if (ratio.equals(frameRatio)) return;
+        frameRatio = ratio;
+        getPreferences(MODE_PRIVATE).edit().putString("capture_ratio", ratio).apply();
+        updateRatioButtons();
+        updateCaptureFrame();
+        setInfo();
+        // Reattach after PreviewView receives its new size. CameraX uses this
+        // viewport for photo/video crop rectangles, not merely a visual mask.
+        preview.postDelayed(() -> {
+            if (controller == null || recording != null) return;
+            try {
+                controller.unbind();
+                preview.setController(null);
+                preview.setController(controller);
+                controller.bindToLifecycle(this);
+                setExposureEv((exposureSeek.getProgress() - 20) / 10f);
+            } catch (Exception e) {
+                Log.e(TAG, "Ratio rebind failed", e);
+                showMessage("비율 변경 실패, 카메라를 다시 실행해 주세요.");
+            }
+        }, 130);
+    }
+
+    private void updateRatioButtons() {
+        if (ratioButtons == null) return;
+        for (int i = 0; i < RATIOS.length; i++) {
+            boolean active = RATIOS[i].equals(frameRatio);
+            ratioButtons[i].setTextColor(active ? INK : WHITE);
+            ratioButtons[i].setBackground(shape(active ? GOLD : 0xB02D3033, dp(16),
+                active ? 0 : 0x88FFFFFF, dp(1)));
+        }
+    }
+
+    private void updateStageBounds() {
+        if (previewStage == null || bottomControls == null || bottomControls.getHeight() == 0) return;
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) previewStage.getLayoutParams();
+        int top = dp(153);
+        int bottom = bottomControls.getHeight() + dp(8);
+        if (lp.topMargin != top || lp.bottomMargin != bottom) {
+            lp.topMargin = top;
+            lp.bottomMargin = bottom;
+            previewStage.setLayoutParams(lp);
+        } else updateCaptureFrame();
+    }
+
+    private void updateCaptureFrame() {
+        if (previewStage == null || previewFrame == null) return;
+        int stageW = previewStage.getWidth(), stageH = previewStage.getHeight();
+        if (stageW < dp(50) || stageH < dp(60)) return;
+        boolean horizontal = getResources().getConfiguration().orientation
+            == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        float widthOverHeight;
+        switch (frameRatio) {
+            case "9:16": widthOverHeight = horizontal ? 16f/9f : 9f/16f; break;
+            case "1:1": widthOverHeight = 1f; break;
+            case "3:2": widthOverHeight = horizontal ? 3f/2f : 2f/3f; break;
+            default: widthOverHeight = horizontal ? 4f/3f : 3f/4f;
+        }
+        int maxW = Math.max(1, stageW - dp(18));
+        int maxH = Math.max(1, stageH - dp(12));
+        int width = Math.min(maxW, Math.round(maxH * widthOverHeight));
+        int height = Math.min(maxH, Math.round(width / widthOverHeight));
+        // Enforce an even viewport dimension for camera encoding/crop stability.
+        width = Math.max(2, width & ~1);
+        height = Math.max(2, height & ~1);
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) previewFrame.getLayoutParams();
+        if (lp.width == width && lp.height == height) return;
+        lp.width = width;
+        lp.height = height;
+        lp.gravity = Gravity.CENTER;
+        previewFrame.setLayoutParams(lp);
     }
 
     private void selectLook(ColorLooks.Look look) {
@@ -365,7 +497,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setInfo() {
-        info.setText(selected.label.toUpperCase(Locale.US) + "  ·  " + (isVideo ? "VIDEO" : "PHOTO"));
+        info.setText(selected.label.toUpperCase(Locale.US) + "  ·  " + frameRatio + "  ·  " + (isVideo ? "VIDEO" : "PHOTO"));
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
     }
 
@@ -574,6 +706,32 @@ public final class MainActivity extends ComponentActivity {
         if (controller != null) controller.unbind();
         if (media3 != null) media3.close();
         super.onDestroy();
+    }
+
+    private final class FrameGuide extends View {
+        final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        FrameGuide() { super(MainActivity.this); setClickable(false); setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); }
+        @Override protected void onDraw(Canvas canvas) {
+            float w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            float inset = dp(1.5f);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(1.1f));
+            paint.setColor(0xD8EDE9E2);
+            canvas.drawRect(inset, inset, w-inset, h-inset, paint);
+            paint.setStrokeWidth(dp(2.5f));
+            paint.setColor(GOLD);
+            float d = dp(21), p = inset + dp(1);
+            canvas.drawLine(p, p, p+d, p, paint);
+            canvas.drawLine(p, p, p, p+d, paint);
+            canvas.drawLine(w-p, p, w-p-d, p, paint);
+            canvas.drawLine(w-p, p, w-p, p+d, paint);
+            canvas.drawLine(p, h-p, p+d, h-p, paint);
+            canvas.drawLine(p, h-p, p, h-p-d, paint);
+            canvas.drawLine(w-p, h-p, w-p-d, h-p, paint);
+            canvas.drawLine(w-p, h-p, w-p, h-p-d, paint);
+            paint.setStyle(Paint.Style.FILL);
+        }
     }
 
     private final class GridOverlay extends View {

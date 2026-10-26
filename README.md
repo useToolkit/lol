@@ -2,9 +2,16 @@
 
 > 첨부된 6장의 호텔·야경 레퍼런스를 참고해 만든 안드로이드 카메라 앱. 브랜드명: **I photo**.
 
+## v1.1.0
+- 촬영 장면 테두리와 코너 가이드: 실제 촬영 영역이 명확하게 보이도록 분리된 미리보기
+- 사진/영상 화면 비율 전환: 4:3(세로 3:4), 9:16, 1:1, 3:2
+- CameraX PreviewView ViewPort에 맞춰 미리보기 크기와 사진/영상 크롭 영역 연동
+- 보정 슬라이더 접기/펼치기, 이전 촬영 비율 기억
+- 실기기별 지원 해상도 및 영상 크롭 동작은 차이가 있을 수 있음
+
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.0.0.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.1.0.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
