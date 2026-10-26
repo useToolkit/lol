@@ -29,6 +29,8 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.camera.core.CameraEffect;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.FocusMeteringAction;
+import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.ExposureState;
@@ -65,6 +67,10 @@ public final class MainActivity extends ComponentActivity {
     private LinearLayout bottomControls;
     private FrameGuide frameGuide;
     private TextView[] ratioButtons;
+    private TextView focusButton, focusIndicator;
+    private boolean focusLocked = false, touchMoved = false, touchedLong = false, pinchActive = false;
+    private float focusX = -1f, focusY = -1f, touchX, touchY, lastPinchDistance, cameraZoom = 1f;
+    private Runnable pendingFocusLock;
     private String frameRatio = "9:16";
     private float currentEv = -.5f;
     private static final String[] RATIOS = {"4:3", "9:16", "1:1", "3:2"};
@@ -128,10 +134,12 @@ public final class MainActivity extends ComponentActivity {
             controller.setVideoCaptureQualitySelector(QualitySelector.from(
                 Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.FHD)));
             controller.setPinchToZoomEnabled(true);
-            controller.setTapToFocusEnabled(true);
+            // Handle both tap focus and press-and-hold AF lock ourselves.
+            controller.setTapToFocusEnabled(false);
             controller.setEffects(Collections.singleton(media3));
             preview.setController(controller);
             controller.bindToLifecycle(this);
+            enableFocusGestures();
             // Slightly darker capture exposure is intentional for luxury-night scenes.
             preview.postDelayed(() -> setExposureEv(currentEv), 900);
             setInfo();
@@ -167,6 +175,13 @@ public final class MainActivity extends ComponentActivity {
         previewFrame.addView(grid, new FrameLayout.LayoutParams(-1, -1));
         frameGuide = new FrameGuide();
         previewFrame.addView(frameGuide, new FrameLayout.LayoutParams(-1, -1));
+        focusIndicator = label("+", 26, GOLD, Typeface.NORMAL);
+        focusIndicator.setGravity(Gravity.CENTER);
+        focusIndicator.setBackground(shape(0x4B0C1116, dp(9), GOLD, dp(2)));
+        focusIndicator.setVisibility(View.GONE);
+        focusIndicator.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        previewFrame.addView(focusIndicator,
+            new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.LEFT | Gravity.TOP));
         previewStage.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> updateCaptureFrame());
 
         View topScrim = new View(this);
@@ -190,6 +205,16 @@ public final class MainActivity extends ComponentActivity {
         TextView brand = label("I photo", 23, WHITE, Typeface.BOLD);
         brand.setLetterSpacing(.005f);
         top.addView(brand, new LinearLayout.LayoutParams(0, -1, 1f));
+        focusButton = pill("AF");
+        focusButton.setContentDescription("초점 고정. 다시 누르면 해제");
+        LinearLayout.LayoutParams focusBtnLp = new LinearLayout.LayoutParams(dp(73), dp(34));
+        focusBtnLp.rightMargin = dp(6);
+        top.addView(focusButton, focusBtnLp);
+        focusButton.setOnClickListener(v -> {
+            if (focusLocked) unlockFocus();
+            else focusAt(focusX >= 0 ? focusX : preview.getWidth()/2f,
+                focusY >= 0 ? focusY : preview.getHeight()/2f, true);
+        });
         flashButton = pill("⚡ 끔");
         flashButton.setContentDescription("플래시");
         flashButton.setOnClickListener(v -> toggleFlash());
@@ -445,6 +470,7 @@ public final class MainActivity extends ComponentActivity {
             return;
         }
         if (ratio.equals(frameRatio)) return;
+        unlockFocus();
         frameRatio = ratio;
         getPreferences(MODE_PRIVATE).edit().putString("capture_ratio", ratio).apply();
         updateRatioButtons();
@@ -589,6 +615,118 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
+
+    /** Single tap: autofocus. Long press: hold AF until tap/unlock/camera switch. */
+    private void enableFocusGestures() {
+        preview.setOnTouchListener((v, e) -> {
+            if (controller == null) return false;
+            switch(e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    touchX = e.getX(); touchY = e.getY();
+                    touchMoved = false; touchedLong = false; pinchActive = false;
+                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    pendingFocusLock = () -> {
+                        touchedLong = true;
+                        focusAt(touchX, touchY, true);
+                    };
+                    handler.postDelayed(pendingFocusLock, 520);
+                    return true;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    pinchActive = true;
+                    lastPinchDistance = fingerDistance(e);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (e.getPointerCount() >= 2) {
+                        float d = fingerDistance(e);
+                        if (lastPinchDistance > 10f && d > 10f) {
+                            float candidate = Math.max(1f, Math.min(6f, cameraZoom * d / lastPinchDistance));
+                            setZoom(candidate);
+                        }
+                        lastPinchDistance = d;
+                    } else if (Math.abs(touchX - e.getX()) > dp(13) ||
+                               Math.abs(touchY - e.getY()) > dp(13)) {
+                        touchMoved = true;
+                        if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    }
+                    return true;
+                case MotionEvent.ACTION_POINTER_UP:
+                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    if (!touchMoved && !touchedLong && !pinchActive)
+                        focusAt(e.getX(), e.getY(), false);
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    return true;
+                default: return true;
+            }
+        });
+    }
+
+    private float fingerDistance(MotionEvent event) {
+        if (event.getPointerCount() < 2) return 0f;
+        float dx = event.getX(0) - event.getX(1), dy = event.getY(0) - event.getY(1);
+        return (float)Math.hypot(dx,dy);
+    }
+
+    private void focusAt(float x, float y, boolean lock) {
+        if (controller == null || controller.getCameraControl() == null ||
+            preview.getWidth() < 2 || preview.getHeight() < 2) return;
+        x = Math.max(1, Math.min(preview.getWidth()-1, x));
+        y = Math.max(1, Math.min(preview.getHeight()-1, y));
+        focusX = x; focusY = y;
+        if (focusLocked) unlockFocus();
+        try {
+            MeteringPoint p = preview.getMeteringPointFactory().createPoint(x, y);
+            FocusMeteringAction.Builder builder = new FocusMeteringAction.Builder(
+                p, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE);
+            if (lock) builder.disableAutoCancel();
+            controller.getCameraControl().startFocusAndMetering(builder.build());
+            focusLocked = lock;
+            showFocusTarget(x, y);
+            if (lock) showMessage("초점 고정됨 · 탭 또는 AF LOCK 버튼으로 해제");
+        } catch (Exception err) {
+            Log.e(TAG,"Unable to focus",err);
+            showMessage("해당 카메라에서 초점 조정을 사용할 수 없습니다.");
+        }
+    }
+
+    private void unlockFocus() {
+        focusLocked = false;
+        if (controller != null && controller.getCameraControl() != null)
+            try { controller.getCameraControl().cancelFocusAndMetering(); }
+            catch (Exception err) { Log.w(TAG,"Cancel focus error",err); }
+        if (focusIndicator != null) focusIndicator.setVisibility(View.GONE);
+        if (focusButton != null) {
+            focusButton.setText("AF");
+            focusButton.setTextColor(WHITE);
+            focusButton.setBackground(shape(0x663A3837,dp(18),0x44FFFFFF,dp(1)));
+        }
+    }
+
+    private void showFocusTarget(float x, float y) {
+        if (focusIndicator != null) {
+            FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)focusIndicator.getLayoutParams();
+            lp.leftMargin=Math.round(x)-dp(28);
+            lp.topMargin=Math.round(y)-dp(28);
+            focusIndicator.setLayoutParams(lp);
+            focusIndicator.setText(focusLocked ? "L" : "+");
+            focusIndicator.setVisibility(View.VISIBLE);
+            if (!focusLocked) handler.postDelayed(() -> {
+                if (!focusLocked && focusIndicator != null)
+                    focusIndicator.setVisibility(View.GONE);
+            }, 1450);
+        }
+        if (focusButton != null) {
+            focusButton.setText(focusLocked ? "AF LOCK" : "AF");
+            focusButton.setTextColor(focusLocked ? INK : WHITE);
+            focusButton.setBackground(shape(focusLocked ? GOLD : 0x663A3837,dp(18),0x44FFFFFF,dp(1)));
+        }
+    }
+
     private void startRecording() {
         ContentValues values = new ContentValues();
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, mediaName("mp4"));
@@ -652,13 +790,17 @@ public final class MainActivity extends ComponentActivity {
 
     private void setZoom(float ratio) {
         if (controller == null) return;
-        try { controller.setZoomRatio(ratio); }
+        try {
+            controller.setZoomRatio(ratio);
+            cameraZoom = ratio;
+        }
         catch (Exception ignored) { showMessage("이 배율은 지원되지 않습니다."); }
     }
 
     private void switchCamera() {
         if (controller == null || recording != null || busy) return;
         try {
+            unlockFocus();
             isFront = !isFront;
             controller.setCameraSelector(isFront ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA);
             setExposureEv(currentEv);
@@ -740,6 +882,7 @@ public final class MainActivity extends ComponentActivity {
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(tick);
+        if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
         if (recording != null) recording.stop();
         if (controller != null) controller.unbind();
         if (media3 != null) media3.close();

@@ -11,7 +11,7 @@
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.2.0.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.3.0.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
@@ -47,6 +47,13 @@ gradle :app:assembleDebug
 ## 오픈소스 라이선스
 
 AndroidX CameraX, Media3, Activity, Core 등의 라이브러리 사용 (Apache-2.0). 앱 코드 자체는 사용자의 개인 프로젝트입니다.
+
+## v1.3 — AF lock
+- Tap on the camera preview to focus on a chosen area.
+- Touch and hold (520ms) to lock focus at the chosen point (CameraX FocusMeteringAction.disableAutoCancel).
+- AF/AF LOCK button in the top toolbar toggles focus lock at the last tapped or center point.
+- Tap again or switch cameras to unlock focus. Pinch-to-zoom works alongside gestures.
+- Actual focus-lock behavior depends on the camera hardware's supported AF modes.
 
 ## v1.2.0: 몰입형 촬영 화면
 - 삼성 기본 카메라 참고: 미리보기를 최대화하고 셔터/모드/줌을 카메라 화면 위에 오버레이
