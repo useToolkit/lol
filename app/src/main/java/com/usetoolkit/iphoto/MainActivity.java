@@ -104,6 +104,26 @@ public final class MainActivity extends ComponentActivity {
     private volatile int lastResultAeMode = -1;
     private volatile boolean lastResultAeLocked = false;
     private volatile int lastResultAwbMode = -1;
+    // Manual sensor exposure: save the ORIGINAL scene's sensor state and apply
+    // the same ISO + shutter duration to every subsequent preview/video frame.
+    private android.util.Range<Integer> supportedISO;
+    private android.util.Range<Long> supportedShutterNs;
+    private volatile boolean hardLockRequested = false;
+    private volatile boolean hardLockVerified = false;
+    private volatile boolean fallbackLockRequested = false;
+    private volatile boolean manualFocusRequested = false;
+    private volatile float targetFocusDistance = -1f;
+    private volatile long baselineShutterNs = 0L;
+    private volatile int baselineISO = 0;
+    private volatile long requestedShutterNs = 0L;
+    private volatile int requestedISO = 0;
+    private volatile int consecutiveLockFrames = 0;
+    private volatile int mismatchFrames = 0;
+    private volatile long allowSensorSettleUntilMs = 0L;
+    private volatile int currentCameraEpoch = 0;
+    private volatile boolean manualSensorAvailable = false;
+    private float manualExposureDeltaEV = 0f;
+    private long manualExposureLastUpdateMs = 0L;
     private PreviewView preview;
     private FrameLayout previewStage, previewFrame;
     private LinearLayout bottomControls;
@@ -218,6 +238,13 @@ public final class MainActivity extends ComponentActivity {
         if (recording != null) return;
         try {
             if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
+            ++currentCameraEpoch;
+            hardLockRequested = false;
+            hardLockVerified = false;
+            fallbackLockRequested = false;
+            manualSensorAvailable = false;
+            consecutiveLockFrames = 0;
+            mismatchFrames = 0;
             boundCamera = null;
             cameraProvider.unbindAll();
             lastCaptureTimeMs = 0;
@@ -267,6 +294,7 @@ public final class MainActivity extends ComponentActivity {
                 group.build());
             if (boundCamera != null && flash && isVideo)
                 boundCamera.getCameraControl().enableTorch(true);
+            manualSensorAvailable = readManualSensorCapabilities();
             lastExposureIndex = Integer.MIN_VALUE;
             handler.postDelayed(() -> setExposureEv(currentEv), 800);
             setInfo();
@@ -276,8 +304,92 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
-    // Replaced by the sensor exposure verification implementation below.
-    private void inspectSensorLockResult(TotalCaptureResult result) { }
+    /** Called from Camera2's capture thread for each COMPLETED repeating result. */
+    private void inspectSensorLockResult(TotalCaptureResult result) {
+        if (!hardLockRequested && !hardLockVerified && !fallbackLockRequested) return;
+        Integer mode=result.get(CaptureResult.CONTROL_AE_MODE);
+        Long exp=result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+        Integer iso=result.get(CaptureResult.SENSOR_SENSITIVITY);
+        Boolean locked=result.get(CaptureResult.CONTROL_AE_LOCK);
+        final int epoch=currentCameraEpoch;
+        final long serial=focusRequestSerial;
+        long now=android.os.SystemClock.elapsedRealtime();
+        if (now<allowSensorSettleUntilMs) return;
+        boolean matches=false;
+        if (hardLockRequested || hardLockVerified) {
+            matches=mode!=null && mode==CaptureRequest.CONTROL_AE_MODE_OFF
+                && iso!=null && exp!=null
+                && Math.abs(iso-requestedISO)<=Math.max(2,requestedISO*.08)
+                && Math.abs(exp-requestedShutterNs)<=Math.max(25000L,requestedShutterNs*.08);
+        }else if(fallbackLockRequested){
+            // Fallback AE-lock state must also be VERIFIED from actual frames.
+            matches=Boolean.TRUE.equals(locked);
+        }
+        consecutiveLockFrames=matches?consecutiveLockFrames+1:0;
+        if (matches) mismatchFrames=0;
+        else mismatchFrames++;
+        if ((hardLockRequested || fallbackLockRequested) && matches && consecutiveLockFrames>=3){
+            final boolean wasHard=hardLockRequested;
+            runOnUiThread(()->{
+                if(epoch!=currentCameraEpoch || serial!=focusRequestSerial || !afAeLockPending)return;
+                hardLockRequested=false;
+                hardLockVerified=wasHard;
+                focusLocked=true;
+                aeLocked=true;
+                afAeLockPending=false;
+                exposureAdjustmentSupported=wasHard || canAdjustExposure();
+                exposureLockBaseEv=currentEv;
+                manualExposureDeltaEV=0f;
+                showFocusTarget(focusX,focusY);
+                showMessage(wasHard ?
+                    "센서 노출 고정 확인 · ISO와 셔터시간 유지":
+                    "기기 수동 노출 미지원 · AE 잠금 모드(유지 보장 제한)");
+            });
+        } else if (focusLocked && mismatchFrames>=18){
+            runOnUiThread(()->{
+                if(epoch!=currentCameraEpoch || serial!=focusRequestSerial || !focusLocked)return;
+                showMessage("노출 고정 해제 감지 · 재고정이 필요합니다.");
+                unlockFocus();
+            });
+        }
+    }
+
+    /** Inspect MANUAL_SENSOR before promising persistent exposure to the user. */
+    private boolean readManualSensorCapabilities() {
+        if(boundCamera==null || boundCamera.getCameraInfo()==null)return false;
+        try {
+            Camera2CameraInfo inf=Camera2CameraInfo.from(boundCamera.getCameraInfo());
+            int[] cap=inf.getCameraCharacteristic(
+                CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+            boolean sensor=false;
+            if(cap!=null)for(int c:cap)if(c==
+                CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)sensor=true;
+            supportedISO=inf.getCameraCharacteristic(
+                CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+            supportedShutterNs=inf.getCameraCharacteristic(
+                CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+            return sensor && supportedISO!=null && supportedShutterNs!=null;
+        }catch(Exception e){
+            Log.w(TAG,"Manual sensor capabilities unavailable",e);
+            return false;
+        }
+    }
+
+    private boolean canManuallySetFocus() {
+        if(boundCamera==null || boundCamera.getCameraInfo()==null)return false;
+        try {
+            Camera2CameraInfo info=Camera2CameraInfo.from(boundCamera.getCameraInfo());
+            Float minDistance=info.getCameraCharacteristic(
+                CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            int[] afModes=info.getCameraCharacteristic(
+                CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+            boolean hasOff=false;
+            if(afModes!=null) for(int m:afModes)if(m==
+                CaptureRequest.CONTROL_AF_MODE_OFF)hasOff=true;
+            return minDistance!=null && minDistance>0f && hasOff &&
+                lastLensFocusDistance>=0 && lastLensFocusDistance<=minDistance;
+        }catch(Exception e){return false;}
+    }
 
 
     private void buildInterface() {
@@ -772,7 +884,7 @@ public final class MainActivity extends ComponentActivity {
     /** Single tap: autofocus. Long press: hold AF until tap/unlock/camera switch. */
     private void enableFocusGestures() {
         preview.setOnTouchListener((v,e)->{
-            if(controller==null)return false;
+            if(boundCamera==null)return false;
             switch(e.getActionMasked()){
                 case MotionEvent.ACTION_DOWN:
                     touchX=e.getX();touchY=e.getY();
@@ -858,7 +970,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private boolean isAELockSupported(){
-        if(controller==null || boundCamera.getCameraInfo()==null)return false;
+        if(boundCamera==null || boundCamera.getCameraInfo()==null)return false;
         try{
             Boolean b=Camera2CameraInfo.from(boundCamera.getCameraInfo())
                 .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE);
@@ -870,7 +982,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private boolean isAWBLockSupported(){
-        if(controller==null || boundCamera.getCameraInfo()==null)return false;
+        if(boundCamera==null || boundCamera.getCameraInfo()==null)return false;
         try{
             Boolean b=Camera2CameraInfo.from(boundCamera.getCameraInfo())
                 .getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE);
@@ -879,7 +991,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void focusAt(float x,float y,boolean lock){
-        if(controller==null||boundCamera.getCameraControl()==null||
+        if(boundCamera==null||boundCamera.getCameraControl()==null||
             preview.getWidth()<2||preview.getHeight()<2)return;
         if(focusLocked || aeLocked || afAeLockPending)unlockFocus();
         x=Math.max(1,Math.min(preview.getWidth()-1,x));
@@ -887,8 +999,8 @@ public final class MainActivity extends ComponentActivity {
         focusX=x;focusY=y;
         final long serial=++focusRequestSerial;
         final float targetX=x,targetY=y;
-        if(lock && !isAELockSupported()){
-            showMessage("이 카메라는 노출 잠금을 지원하지 않아 AE/AF 고정할 수 없습니다.");
+        if(lock && !manualSensorAvailable && !isAELockSupported()){
+            showMessage("이 카메라는 수동 노출·AE 잠금을 지원하지 않습니다.");
             lock=false;
         }
         final boolean requestedLock=lock;
@@ -936,48 +1048,81 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void applyHardwareLock(long serial,float x,float y){
-        if(serial!=focusRequestSerial || !afAeLockPending || controller==null||
+        if(serial!=focusRequestSerial || !afAeLockPending || boundCamera==null||
             boundCamera.getCameraControl()==null)return;
         final boolean awb=isAWBLockSupported();
+        final int cameraEpoch=currentCameraEpoch;
         try{
-            CaptureRequestOptions.Builder options=new CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,true);
+            CaptureRequestOptions.Builder options=new CaptureRequestOptions.Builder();
+            boolean manual=manualSensorAvailable &&
+                supportedISO!=null && supportedShutterNs!=null &&
+                lastSensorISO>0 && lastSensorExposureNs>0 &&
+                android.os.SystemClock.elapsedRealtime()-lastCaptureTimeMs<1200;
+            if(manual){
+                baselineISO=Math.max(supportedISO.getLower(), Math.min(
+                    supportedISO.getUpper(), lastSensorISO));
+                baselineShutterNs=Math.max(supportedShutterNs.getLower(), Math.min(
+                    supportedShutterNs.getUpper(), lastSensorExposureNs));
+                requestedISO=baselineISO;
+                requestedShutterNs=baselineShutterNs;
+                manualFocusRequested=canManuallySetFocus();
+                if(manualFocusRequested){
+                    targetFocusDistance=lastLensFocusDistance;
+                    options.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE,
+                        CaptureRequest.CONTROL_AF_MODE_OFF);
+                    options.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE,
+                        targetFocusDistance);
+                }
+                options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_OFF);
+                options.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY,requestedISO);
+                options.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME,requestedShutterNs);
+                hardLockRequested=true;
+                fallbackLockRequested=false;
+            }else if(isAELockSupported()){
+                options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,true);
+                hardLockRequested=false;
+                fallbackLockRequested=true;
+            }else{
+                afAeLockPending=false;
+                if(focusButton!=null)focusButton.setText("AF");
+                showMessage("이 기기는 하드웨어 노출 잠금을 지원하지 않습니다.");
+                return;
+            }
             if(awb)options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK,true);
+            awbLocked=awb;
+            allowSensorSettleUntilMs=android.os.SystemClock.elapsedRealtime()+220;
+            consecutiveLockFrames=0;
+            mismatchFrames=0;
             ListenableFuture<Void> applied=Camera2CameraControl
                 .from(boundCamera.getCameraControl()).addCaptureRequestOptions(options.build());
             applied.addListener(()->{
-                if(serial!=focusRequestSerial)return;
-                try{
-                    applied.get(); // The repeating request actually received the AE lock.
-                    aeLocked=true;
-                    awbLocked=awb;
-                    focusLocked=true;
-                    afAeLockPending=false;
-                    exposureLockBaseEv=currentEv;
-                    exposureAdjustmentSupported=canAdjustExposure();
-                    showFocusTarget(x,y);
-                    showMessage(awb?
-                        "AE/AF 고정 · 태양 아이콘 위/아래로 밝기 조정":
-                        "AE/AF 고정 · 자동 화이트밸런스는 유지됩니다.");
-                }catch(Exception e){
-                    afAeLockPending=false;focusLocked=false;aeLocked=false;
-                    Log.e(TAG,"Hardware AE lock failed",e);
-                    showMessage("카메라가 노출 고정을 적용하지 못했습니다.");
-                    if(focusButton!=null)focusButton.setText("AF");
-                    if(controller!=null && boundCamera.getCameraControl()!=null)
-                        boundCamera.getCameraControl().cancelFocusAndMetering();
+                if(serial!=focusRequestSerial || cameraEpoch!=currentCameraEpoch)return;
+                try{applied.get();}
+                catch(Exception e){
+                    Log.e(TAG,"Apply sensor exposure failed",e);
+                    failPendingHardwareLock(serial,"카메라 노출 고정 적용 실패");
                 }
             },ContextCompat.getMainExecutor(this));
+            handler.postDelayed(()->{
+                if(serial==focusRequestSerial && cameraEpoch==currentCameraEpoch
+                    && afAeLockPending)failPendingHardwareLock(serial,
+                        "프레임에서 고정이 확인되지 않아 잠금을 취소했습니다.");
+            },2500);
         }catch(Exception e){
-            afAeLockPending=false;focusLocked=false;aeLocked=false;
             Log.e(TAG,"Cannot apply exposure lock",e);
-            showMessage("노출 잠금을 지원하지 않는 카메라입니다.");
-            if(focusButton!=null)focusButton.setText("AF");
+            failPendingHardwareLock(serial,"노출 잠금이 실패했습니다.");
         }
     }
 
+    private void failPendingHardwareLock(long serial,String message){
+        if(serial!=focusRequestSerial)return;
+        unlockFocus();
+        showMessage(message);
+    }
+
     private boolean canAdjustExposure(){
-        if(controller==null || boundCamera.getCameraInfo()==null)return false;
+        if(boundCamera==null || boundCamera.getCameraInfo()==null)return false;
         ExposureState state=boundCamera.getCameraInfo().getExposureState();
         return state!=null && state.isExposureCompensationSupported() &&
             state.getExposureCompensationStep().floatValue()>0f &&
@@ -986,19 +1131,18 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void unlockFocus(){
-        final boolean hadAE=aeLocked || afAeLockPending;
-        ++focusRequestSerial; // Reject any delayed lock completion after unlock.
+        final boolean hadAE=aeLocked || afAeLockPending ||
+            hardLockVerified || hardLockRequested || fallbackLockRequested;
+        ++focusRequestSerial;
         afAeLockPending=false;focusLocked=false;aeLocked=false;awbLocked=false;
+        hardLockRequested=false;hardLockVerified=false;fallbackLockRequested=false;
+        manualFocusRequested=false;consecutiveLockFrames=0;mismatchFrames=0;
         draggingSun=false;
-        if(controller!=null && boundCamera.getCameraControl()!=null){
+        if(boundCamera!=null && boundCamera.getCameraControl()!=null){
             try{
                 if(hadAE){
-                    CaptureRequestOptions opts=new CaptureRequestOptions.Builder()
-                        .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,false)
-                        .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK,false)
-                        .build();
                     Camera2CameraControl.from(boundCamera.getCameraControl())
-                        .addCaptureRequestOptions(opts);
+                        .clearCaptureRequestOptions();
                 }
                 boundCamera.getCameraControl().cancelFocusAndMetering();
             }catch(Exception e){Log.w(TAG,"AE/AF unlock error",e);}
@@ -1088,26 +1232,61 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setExposureEv(float ev) {
-        if (boundCamera == null || boundCamera.getCameraInfo() == null ||
-            boundCamera.getCameraControl() == null) return;
-        ExposureState state = boundCamera.getCameraInfo().getExposureState();
-        if (state == null || !state.isExposureCompensationSupported()) return;
-        float step = state.getExposureCompensationStep().floatValue();
-        if (step <= 0f) return;
-        Range<Integer> range = state.getExposureCompensationRange();
-        int index = Math.round(ev / step);
-        index = Math.max(range.getLower(), Math.min(range.getUpper(), index));
-        currentEv = index * step;
-        // Update the sun immediately, preserving the locked exposure baseline.
-        if (exposureSunGuide != null) exposureSunGuide.invalidate();
-        if (lastExposureIndex == index) return;
-        lastExposureIndex = index;
-        try {
-            boundCamera.getCameraControl().setExposureCompensationIndex(index);
-        } catch (Exception e) {
-            Log.e(TAG,"Exposure compensation failed",e);
-            lastExposureIndex = Integer.MIN_VALUE;
+        if(boundCamera==null || boundCamera.getCameraInfo()==null)return;
+        if(hardLockVerified){
+            // Camera2 SENSOR values are manual: CameraX exposure compensation
+            // would not work, so modify the FIXED shutter/ISO instead.
+            adjustLockedSensorExposure(ev-exposureLockBaseEv);
+            return;
         }
+        ExposureState state=boundCamera.getCameraInfo().getExposureState();
+        if(state==null || !state.isExposureCompensationSupported())return;
+        float step=state.getExposureCompensationStep().floatValue();
+        if(step<=0f)return;
+        Range<Integer> range=state.getExposureCompensationRange();
+        int index=Math.max(range.getLower(),Math.min(range.getUpper(),Math.round(ev/step)));
+        currentEv=index*step;
+        if(exposureSunGuide!=null)exposureSunGuide.invalidate();
+        if(lastExposureIndex==index)return;
+        lastExposureIndex=index;
+        try{boundCamera.getCameraControl().setExposureCompensationIndex(index);}
+        catch(Exception e){Log.e(TAG,"AE compensation failed",e);lastExposureIndex=Integer.MIN_VALUE;}
+    }
+
+    private void adjustLockedSensorExposure(float ev){
+        if(!hardLockVerified || supportedISO==null || supportedShutterNs==null ||
+            boundCamera==null || baselineISO<=0 || baselineShutterNs<=0)return;
+        double desiredGain=Math.pow(2d,Math.max(-3d,Math.min(3d,ev)));
+        // Preserve shutter time when possible, adjusting ISO first.
+        // If ISO range runs out, adjust shutter within safe device limits.
+        final double exposureProduct=baselineISO*(double)baselineShutterNs*desiredGain;
+        long shutter=baselineShutterNs;
+        int iso=(int)Math.round(exposureProduct/shutter);
+        iso=Math.max(supportedISO.getLower(),Math.min(supportedISO.getUpper(),iso));
+        shutter=Math.round(exposureProduct/Math.max(1,iso));
+        long maxVideoShutter=Math.min(supportedShutterNs.getUpper(),33000000L);
+        shutter=Math.max(supportedShutterNs.getLower(),Math.min(maxVideoShutter,shutter));
+        // Recompute ISO in case shutter had to be clamped.
+        iso=(int)Math.round(exposureProduct/Math.max(1,shutter));
+        iso=Math.max(supportedISO.getLower(),Math.min(supportedISO.getUpper(),iso));
+        requestedISO=iso;
+        requestedShutterNs=shutter;
+        double actualGain=iso*(double)shutter/(baselineISO*(double)baselineShutterNs);
+        manualExposureDeltaEV=(float)(Math.log(Math.max(.001,actualGain))/Math.log(2));
+        currentEv=exposureLockBaseEv+manualExposureDeltaEV;
+        if(exposureSunGuide!=null)exposureSunGuide.invalidate();
+        long now=android.os.SystemClock.elapsedRealtime();
+        if(now-manualExposureLastUpdateMs<75)return;
+        manualExposureLastUpdateMs=now;
+        allowSensorSettleUntilMs=now+270;
+        CaptureRequestOptions options=new CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY,requestedISO)
+            .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME,requestedShutterNs)
+            .build();
+        try{
+            Camera2CameraControl.from(boundCamera.getCameraControl())
+                .addCaptureRequestOptions(options);
+        }catch(Exception e){Log.e(TAG,"Manual exposure adjust failed",e);}
     }
 
     private void setZoom(float ratio) {
