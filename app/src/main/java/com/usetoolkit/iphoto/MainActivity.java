@@ -6,6 +6,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.DashPathEffect;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CaptureRequest;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -27,9 +30,13 @@ import android.widget.Toast;
 import androidx.activity.ComponentActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.camera.camera2.interop.Camera2CameraControl;
+import androidx.camera.camera2.interop.Camera2CameraInfo;
+import androidx.camera.camera2.interop.CaptureRequestOptions;
 import androidx.camera.core.CameraEffect;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.FocusMeteringAction;
+import androidx.camera.core.FocusMeteringResult;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
@@ -51,12 +58,15 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
+import com.google.common.util.concurrent.ListenableFuture;
+
 import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Locale;
 
 /** I photo - on-device photo/video capture with a shared GPU-based 3D LUT. */
+@androidx.annotation.OptIn(markerClass = androidx.camera.camera2.interop.ExperimentalCamera2Interop.class)
 public final class MainActivity extends ComponentActivity {
     private static final String TAG = "IPhoto";
     private static final int INK = Color.rgb(9, 11, 13);
@@ -75,6 +85,15 @@ public final class MainActivity extends ComponentActivity {
     private boolean focusLocked = false, touchMoved = false, touchedLong = false, pinchActive = false;
     private float focusX = -1f, focusY = -1f, touchX, touchY, lastPinchDistance, cameraZoom = 1f;
     private Runnable pendingFocusLock;
+    private ExposureSunGuide exposureSunGuide;
+    private boolean aeLocked = false;
+    private boolean afAeLockPending = false;
+    private boolean draggingSun = false;
+    private boolean awbLocked = false;
+    private boolean exposureAdjustmentSupported = false;
+    private long focusRequestSerial = 0L;
+    private float exposureDragStartY, exposureDragStartEv, exposureLockBaseEv;
+    private int lastExposureIndex = Integer.MIN_VALUE;
     private String frameRatio = "9:16";
     private float currentEv = -.5f;
     private static final String[] RATIOS = {"4:3", "9:16", "1:1", "3:2"};
@@ -147,6 +166,7 @@ public final class MainActivity extends ComponentActivity {
             controller.setEffects(Collections.singleton(media3));
             preview.setController(controller);
             controller.bindToLifecycle(this);
+            lastExposureIndex = Integer.MIN_VALUE;
             enableFocusGestures();
             // Slightly darker capture exposure is intentional for luxury-night scenes.
             preview.postDelayed(() -> setExposureEv(currentEv), 900);
@@ -209,6 +229,12 @@ public final class MainActivity extends ComponentActivity {
         focusIndicator.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         previewFrame.addView(focusIndicator,
             new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.LEFT | Gravity.TOP));
+        exposureSunGuide = new ExposureSunGuide();
+        exposureSunGuide.setVisibility(View.GONE);
+        exposureSunGuide.setClickable(false);
+        exposureSunGuide.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        previewFrame.addView(exposureSunGuide,
+            new FrameLayout.LayoutParams(-1, -1));
         previewStage.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> updateCaptureFrame());
 
         View topScrim = new View(this);
@@ -233,12 +259,12 @@ public final class MainActivity extends ComponentActivity {
         brand.setLetterSpacing(.005f);
         top.addView(brand, new LinearLayout.LayoutParams(0, -1, 1f));
         focusButton = pill("AF");
-        focusButton.setContentDescription("초점 고정. 다시 누르면 해제");
+        focusButton.setContentDescription("AE AF 초점 노출 고정. 다시 누르면 해제");
         LinearLayout.LayoutParams focusBtnLp = new LinearLayout.LayoutParams(dp(73), dp(34));
         focusBtnLp.rightMargin = dp(6);
         top.addView(focusButton, focusBtnLp);
         focusButton.setOnClickListener(v -> {
-            if (focusLocked) unlockFocus();
+            if (focusLocked || afAeLockPending) unlockFocus();
             else focusAt(focusX >= 0 ? focusX : preview.getWidth()/2f,
                 focusY >= 0 ? focusY : preview.getHeight()/2f, true);
         });
@@ -498,6 +524,7 @@ public final class MainActivity extends ComponentActivity {
         }
         if (ratio.equals(frameRatio)) return;
         unlockFocus();
+        if (focusLocked || afAeLockPending) unlockFocus();
         frameRatio = ratio;
         getPreferences(MODE_PRIVATE).edit().putString("capture_ratio", ratio).apply();
         updateRatioButtons();
@@ -645,112 +672,269 @@ public final class MainActivity extends ComponentActivity {
 
     /** Single tap: autofocus. Long press: hold AF until tap/unlock/camera switch. */
     private void enableFocusGestures() {
-        preview.setOnTouchListener((v, e) -> {
-            if (controller == null) return false;
-            switch(e.getActionMasked()) {
+        preview.setOnTouchListener((v,e)->{
+            if(controller==null)return false;
+            switch(e.getActionMasked()){
                 case MotionEvent.ACTION_DOWN:
-                    touchX = e.getX(); touchY = e.getY();
-                    touchMoved = false; touchedLong = false; pinchActive = false;
-                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
-                    pendingFocusLock = () -> {
-                        touchedLong = true;
-                        focusAt(touchX, touchY, true);
+                    touchX=e.getX();touchY=e.getY();
+                    touchMoved=false;touchedLong=false;pinchActive=false;
+                    draggingSun=focusLocked && isNearSun(touchX,touchY);
+                    if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
+                    if(draggingSun){
+                        exposureDragStartY=touchY;
+                        exposureDragStartEv=currentEv;
+                        if(!exposureAdjustmentSupported)showMessage("이 기기는 노출 밝기 조정을 지원하지 않습니다.");
+                        return true;
+                    }
+                    pendingFocusLock=()->{
+                        touchedLong=true;
+                        focusAt(touchX,touchY,true);
                     };
-                    handler.postDelayed(pendingFocusLock, 520);
+                    handler.postDelayed(pendingFocusLock,520);
                     return true;
                 case MotionEvent.ACTION_POINTER_DOWN:
-                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
-                    pinchActive = true;
-                    lastPinchDistance = fingerDistance(e);
+                    if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
+                    draggingSun=false;
+                    pinchActive=true;
+                    lastPinchDistance=fingerDistance(e);
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (e.getPointerCount() >= 2) {
-                        float d = fingerDistance(e);
-                        if (lastPinchDistance > 10f && d > 10f) {
-                            float candidate = Math.max(1f, Math.min(6f, cameraZoom * d / lastPinchDistance));
-                            setZoom(candidate);
+                    if(draggingSun && e.getPointerCount()==1){
+                        if(exposureAdjustmentSupported){
+                            // Upward drag = positive exposure compensation, downward = negative.
+                            float ev=exposureDragStartEv+(exposureDragStartY-e.getY())/dp(85f);
+                            setExposureEv(ev);
                         }
-                        lastPinchDistance = d;
-                    } else if (Math.abs(touchX - e.getX()) > dp(13) ||
-                               Math.abs(touchY - e.getY()) > dp(13)) {
-                        touchMoved = true;
-                        if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                        return true;
+                    }
+                    if(e.getPointerCount()>=2){
+                        float d=fingerDistance(e);
+                        if(lastPinchDistance>10f && d>10f){
+                            float desired=Math.max(1f,Math.min(6f,cameraZoom*d/lastPinchDistance));
+                            setZoom(desired);
+                        }
+                        lastPinchDistance=d;
+                    }else if(Math.abs(touchX-e.getX())>dp(13)||
+                            Math.abs(touchY-e.getY())>dp(13)){
+                        touchMoved=true;
+                        if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
                     }
                     return true;
                 case MotionEvent.ACTION_POINTER_UP:
-                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
                     return true;
                 case MotionEvent.ACTION_UP:
-                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
-                    if (!touchMoved && !touchedLong && !pinchActive)
-                        focusAt(e.getX(), e.getY(), false);
+                    if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
+                    if(draggingSun){draggingSun=false;return true;}
+                    if(!touchMoved && !touchedLong && !pinchActive)
+                        focusAt(e.getX(),e.getY(),false);
                     return true;
                 case MotionEvent.ACTION_CANCEL:
-                    if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+                    draggingSun=false;
+                    if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
                     return true;
-                default: return true;
+                default:return true;
             }
         });
     }
 
-    private float fingerDistance(MotionEvent event) {
-        if (event.getPointerCount() < 2) return 0f;
-        float dx = event.getX(0) - event.getX(1), dy = event.getY(0) - event.getY(1);
+    private boolean isNearSun(float x,float y){
+        if(exposureSunGuide==null || !focusLocked)return false;
+        return Math.abs(x-sunX())<=dp(45)&&Math.abs(y-sunY())<=dp(112);
+    }
+    private float sunX(){
+        float w=preview==null?dp(320):preview.getWidth();
+        float chosen=focusX + (focusX>w*.68f?-dp(86):dp(86));
+        return Math.max(dp(34),Math.min(w-dp(34),chosen));
+    }
+    private float sunY(){
+        float h=preview==null?dp(550):preview.getHeight();
+        return Math.max(dp(118),Math.min(h-dp(118),focusY));
+    }
+
+    private float fingerDistance(MotionEvent event){
+        if(event.getPointerCount()<2)return 0f;
+        float dx=event.getX(0)-event.getX(1),dy=event.getY(0)-event.getY(1);
         return (float)Math.hypot(dx,dy);
     }
 
-    private void focusAt(float x, float y, boolean lock) {
-        if (controller == null || controller.getCameraControl() == null ||
-            preview.getWidth() < 2 || preview.getHeight() < 2) return;
-        x = Math.max(1, Math.min(preview.getWidth()-1, x));
-        y = Math.max(1, Math.min(preview.getHeight()-1, y));
-        focusX = x; focusY = y;
-        if (focusLocked) unlockFocus();
-        try {
-            MeteringPoint p = preview.getMeteringPointFactory().createPoint(x, y);
-            FocusMeteringAction.Builder builder = new FocusMeteringAction.Builder(
-                p, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE);
-            if (lock) builder.disableAutoCancel();
-            controller.getCameraControl().startFocusAndMetering(builder.build());
-            focusLocked = lock;
-            showFocusTarget(x, y);
-            if (lock) showMessage("초점 고정됨 · 탭 또는 AF LOCK 버튼으로 해제");
-        } catch (Exception err) {
-            Log.e(TAG,"Unable to focus",err);
-            showMessage("해당 카메라에서 초점 조정을 사용할 수 없습니다.");
+    private boolean isAELockSupported(){
+        if(controller==null || controller.getCameraInfo()==null)return false;
+        try{
+            Boolean b=Camera2CameraInfo.from(controller.getCameraInfo())
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE);
+            return Boolean.TRUE.equals(b);
+        }catch(Exception e){
+            Log.e(TAG,"AE lock characteristics unavailable",e);
+            return false;
         }
     }
 
-    private void unlockFocus() {
-        focusLocked = false;
-        if (controller != null && controller.getCameraControl() != null)
-            try { controller.getCameraControl().cancelFocusAndMetering(); }
-            catch (Exception err) { Log.w(TAG,"Cancel focus error",err); }
-        if (focusIndicator != null) focusIndicator.setVisibility(View.GONE);
-        if (focusButton != null) {
+    private boolean isAWBLockSupported(){
+        if(controller==null || controller.getCameraInfo()==null)return false;
+        try{
+            Boolean b=Camera2CameraInfo.from(controller.getCameraInfo())
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE);
+            return Boolean.TRUE.equals(b);
+        }catch(Exception e){return false;}
+    }
+
+    private void focusAt(float x,float y,boolean lock){
+        if(controller==null||controller.getCameraControl()==null||
+            preview.getWidth()<2||preview.getHeight()<2)return;
+        if(focusLocked || aeLocked || afAeLockPending)unlockFocus();
+        x=Math.max(1,Math.min(preview.getWidth()-1,x));
+        y=Math.max(1,Math.min(preview.getHeight()-1,y));
+        focusX=x;focusY=y;
+        final long serial=++focusRequestSerial;
+        final float targetX=x,targetY=y;
+        if(lock && !isAELockSupported()){
+            showMessage("이 카메라는 노출 잠금을 지원하지 않아 AE/AF 고정할 수 없습니다.");
+            lock=false;
+        }
+        final boolean requestedLock=lock;
+        try{
+            MeteringPoint point=preview.getMeteringPointFactory().createPoint(x,y);
+            FocusMeteringAction.Builder builder=new FocusMeteringAction.Builder(
+                point, FocusMeteringAction.FLAG_AF|FocusMeteringAction.FLAG_AE|
+                    FocusMeteringAction.FLAG_AWB);
+            if(requestedLock)builder.disableAutoCancel();
+            ListenableFuture<FocusMeteringResult> focusFuture=
+                controller.getCameraControl().startFocusAndMetering(builder.build());
+            afAeLockPending=requestedLock;
+            if(requestedLock && focusButton!=null)focusButton.setText("초점 조정 중");
+            if(!requestedLock){
+                showFocusTarget(x,y);
+            }else{
+                focusFuture.addListener(()->{
+                    if(serial!=focusRequestSerial || !afAeLockPending)return;
+                    try{
+                        FocusMeteringResult res=focusFuture.get();
+                        if(!res.isFocusSuccessful()){
+                            afAeLockPending=false;
+                            showMessage("초점을 확정하지 못했습니다. 다시 길게 눌러주세요.");
+                            controller.getCameraControl().cancelFocusAndMetering();
+                            showFocusTarget(targetX,targetY);
+                            return;
+                        }
+                        // Let AE/AWB metering settle at the original subject before
+                        // freezing Camera2 request state.
+                        handler.postDelayed(()->applyHardwareLock(serial,targetX,targetY),180);
+                    }catch(Exception e){
+                        if(serial!=focusRequestSerial)return;
+                        afAeLockPending=false;
+                        Log.e(TAG,"AF metering error",e);
+                        showMessage("초점 고정 실패. 다시 시도해 주세요.");
+                        if(focusButton!=null)focusButton.setText("AF");
+                    }
+                },ContextCompat.getMainExecutor(this));
+            }
+        }catch(Exception err){
+            afAeLockPending=false;
+            Log.e(TAG,"Focus failed",err);
+            showMessage("초점 조정을 시작할 수 없습니다.");
+        }
+    }
+
+    private void applyHardwareLock(long serial,float x,float y){
+        if(serial!=focusRequestSerial || !afAeLockPending || controller==null||
+            controller.getCameraControl()==null)return;
+        final boolean awb=isAWBLockSupported();
+        try{
+            CaptureRequestOptions.Builder options=new CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,true);
+            if(awb)options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK,true);
+            ListenableFuture<Void> applied=Camera2CameraControl
+                .from(controller.getCameraControl()).addCaptureRequestOptions(options.build());
+            applied.addListener(()->{
+                if(serial!=focusRequestSerial)return;
+                try{
+                    applied.get(); // The repeating request actually received the AE lock.
+                    aeLocked=true;
+                    awbLocked=awb;
+                    focusLocked=true;
+                    afAeLockPending=false;
+                    exposureLockBaseEv=currentEv;
+                    exposureAdjustmentSupported=canAdjustExposure();
+                    showFocusTarget(x,y);
+                    showMessage(awb?
+                        "AE/AF 고정 · 태양 아이콘 위/아래로 밝기 조정":
+                        "AE/AF 고정 · 자동 화이트밸런스는 유지됩니다.");
+                }catch(Exception e){
+                    afAeLockPending=false;focusLocked=false;aeLocked=false;
+                    Log.e(TAG,"Hardware AE lock failed",e);
+                    showMessage("카메라가 노출 고정을 적용하지 못했습니다.");
+                    if(focusButton!=null)focusButton.setText("AF");
+                    if(controller!=null && controller.getCameraControl()!=null)
+                        controller.getCameraControl().cancelFocusAndMetering();
+                }
+            },ContextCompat.getMainExecutor(this));
+        }catch(Exception e){
+            afAeLockPending=false;focusLocked=false;aeLocked=false;
+            Log.e(TAG,"Cannot apply exposure lock",e);
+            showMessage("노출 잠금을 지원하지 않는 카메라입니다.");
+            if(focusButton!=null)focusButton.setText("AF");
+        }
+    }
+
+    private boolean canAdjustExposure(){
+        if(controller==null || controller.getCameraInfo()==null)return false;
+        ExposureState state=controller.getCameraInfo().getExposureState();
+        return state!=null && state.isExposureCompensationSupported() &&
+            state.getExposureCompensationStep().floatValue()>0f &&
+            state.getExposureCompensationRange().getUpper()>
+                state.getExposureCompensationRange().getLower();
+    }
+
+    private void unlockFocus(){
+        final boolean hadAE=aeLocked || afAeLockPending;
+        ++focusRequestSerial; // Reject any delayed lock completion after unlock.
+        afAeLockPending=false;focusLocked=false;aeLocked=false;awbLocked=false;
+        draggingSun=false;
+        if(controller!=null && controller.getCameraControl()!=null){
+            try{
+                if(hadAE){
+                    CaptureRequestOptions opts=new CaptureRequestOptions.Builder()
+                        .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,false)
+                        .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK,false)
+                        .build();
+                    Camera2CameraControl.from(controller.getCameraControl())
+                        .addCaptureRequestOptions(opts);
+                }
+                controller.getCameraControl().cancelFocusAndMetering();
+            }catch(Exception e){Log.w(TAG,"AE/AF unlock error",e);}
+        }
+        if(focusIndicator!=null)focusIndicator.setVisibility(View.GONE);
+        if(exposureSunGuide!=null)exposureSunGuide.setVisibility(View.GONE);
+        if(focusButton!=null){
             focusButton.setText("AF");
             focusButton.setTextColor(WHITE);
             focusButton.setBackground(shape(0x663A3837,dp(18),0x44FFFFFF,dp(1)));
         }
     }
 
-    private void showFocusTarget(float x, float y) {
-        if (focusIndicator != null) {
+    private void showFocusTarget(float x,float y){
+        if(focusIndicator!=null){
             FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)focusIndicator.getLayoutParams();
             lp.leftMargin=Math.round(x)-dp(28);
             lp.topMargin=Math.round(y)-dp(28);
             focusIndicator.setLayoutParams(lp);
-            focusIndicator.setText(focusLocked ? "L" : "+");
+            focusIndicator.setText(focusLocked?"L":"+");
             focusIndicator.setVisibility(View.VISIBLE);
-            if (!focusLocked) handler.postDelayed(() -> {
-                if (!focusLocked && focusIndicator != null)
+            if(!focusLocked)handler.postDelayed(()->{
+                if(!focusLocked && focusIndicator!=null)
                     focusIndicator.setVisibility(View.GONE);
-            }, 1450);
+            },1450);
         }
-        if (focusButton != null) {
-            focusButton.setText(focusLocked ? "AF LOCK" : "AF");
-            focusButton.setTextColor(focusLocked ? INK : WHITE);
-            focusButton.setBackground(shape(focusLocked ? GOLD : 0x663A3837,dp(18),0x44FFFFFF,dp(1)));
+        if(focusButton!=null){
+            focusButton.setText(focusLocked?"AE/AF":"AF");
+            focusButton.setTextColor(focusLocked?INK:WHITE);
+            focusButton.setBackground(shape(focusLocked?GOLD:0x663A3837,
+                dp(18),0x44FFFFFF,dp(1)));
+        }
+        if(exposureSunGuide!=null){
+            exposureSunGuide.setVisibility(focusLocked?View.VISIBLE:View.GONE);
+            exposureSunGuide.invalidate();
         }
     }
 
@@ -804,15 +988,26 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setExposureEv(float ev) {
-        if (controller == null || controller.getCameraInfo() == null || controller.getCameraControl() == null) return;
+        if (controller == null || controller.getCameraInfo() == null ||
+            controller.getCameraControl() == null) return;
         ExposureState state = controller.getCameraInfo().getExposureState();
         if (state == null || !state.isExposureCompensationSupported()) return;
         float step = state.getExposureCompensationStep().floatValue();
-        if (step == 0f) return;
-        int index = Math.round(ev / step);
+        if (step <= 0f) return;
         Range<Integer> range = state.getExposureCompensationRange();
+        int index = Math.round(ev / step);
         index = Math.max(range.getLower(), Math.min(range.getUpper(), index));
-        controller.getCameraControl().setExposureCompensationIndex(index);
+        currentEv = index * step;
+        // Update the sun immediately, preserving the locked exposure baseline.
+        if (exposureSunGuide != null) exposureSunGuide.invalidate();
+        if (lastExposureIndex == index) return;
+        lastExposureIndex = index;
+        try {
+            controller.getCameraControl().setExposureCompensationIndex(index);
+        } catch (Exception e) {
+            Log.e(TAG,"Exposure compensation failed",e);
+            lastExposureIndex = Integer.MIN_VALUE;
+        }
     }
 
     private void setZoom(float ratio) {
@@ -828,6 +1023,7 @@ public final class MainActivity extends ComponentActivity {
         if (controller == null || recording != null || busy) return;
         try {
             unlockFocus();
+            lastExposureIndex = Integer.MIN_VALUE;
             isFront = !isFront;
             controller.setCameraSelector(isFront ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA);
             setExposureEv(currentEv);
@@ -910,10 +1106,54 @@ public final class MainActivity extends ComponentActivity {
     @Override protected void onDestroy() {
         handler.removeCallbacks(tick);
         if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+        if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
         if (recording != null) recording.stop();
         if (controller != null) controller.unbind();
         if (media3 != null) media3.close();
         super.onDestroy();
+    }
+
+    private final class ExposureSunGuide extends View {
+        private final Paint pen=new Paint(Paint.ANTI_ALIAS_FLAG);
+        ExposureSunGuide(){super(MainActivity.this);}
+        @Override protected void onDraw(Canvas canvas){
+            if(!focusLocked || getWidth()<dp(80) || getHeight()<dp(160))return;
+            float x=sunX(),y=sunY(), r=dp(10);
+            float deltaY=Math.max(-dp(72),Math.min(dp(72),
+                -(currentEv-exposureLockBaseEv)*dp(36)));
+            float knobY=y+deltaY;
+            // Subtle dotted exposure ruler, with a movable sunlight icon.
+            pen.setStyle(Paint.Style.STROKE);
+            pen.setStrokeWidth(dp(1.6f));
+            pen.setColor(0xDFE6DDCC);
+            pen.setPathEffect(new DashPathEffect(new float[]{dp(1.5f),dp(6)},0));
+            canvas.drawLine(x,y-dp(89),x,y+dp(89),pen);
+            pen.setPathEffect(null);
+            pen.setStyle(Paint.Style.FILL);
+            pen.setColor(0xB9090B0F);
+            canvas.drawCircle(x,knobY,dp(22),pen);
+            pen.setStyle(Paint.Style.STROKE);
+            pen.setStrokeWidth(dp(2.1f));
+            pen.setColor(GOLD);
+            canvas.drawCircle(x,knobY,r,pen);
+            for(int i=0;i<8;i++){
+                double angle=2*Math.PI*i/8;
+                float dx=(float)Math.cos(angle),dy=(float)Math.sin(angle);
+                canvas.drawLine(x+dx*dp(14),knobY+dy*dp(14),
+                    x+dx*dp(20),knobY+dy*dp(20),pen);
+            }
+            pen.setStyle(Paint.Style.FILL);
+            pen.setColor(WHITE);
+            pen.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+            pen.setTextAlign(Paint.Align.CENTER);
+            pen.setTextSize(dp(11));
+            canvas.drawText(String.format(Locale.US,"%+.1f EV",currentEv-exposureLockBaseEv),
+                x,Math.max(dp(20),y-dp(99)),pen);
+            pen.setTextSize(dp(10));
+            float tx=Math.max(dp(75),Math.min(getWidth()-dp(75),focusX));
+            float ty=Math.max(dp(16),focusY-dp(44));
+            canvas.drawText("AE/AF LOCK",tx,ty,pen);
+        }
     }
 
     private final class FrameGuide extends View {

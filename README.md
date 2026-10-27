@@ -11,7 +11,7 @@
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.3.1.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.4.0.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
@@ -47,6 +47,15 @@ gradle :app:assembleDebug
 ## 오픈소스 라이선스
 
 AndroidX CameraX, Media3, Activity, Core 등의 라이브러리 사용 (Apache-2.0). 앱 코드 자체는 사용자의 개인 프로젝트입니다.
+
+## v1.4.0 — Persistent AE/AF lock + sun exposure slider
+- Long-press viewfinder (520ms) or tap AF to initiate focus metering and lock at the ORIGINAL subject.
+- CameraX FocusMeteringAction.disableAutoCancel() keeps AF after focus confirms. Camera2Interop additionally sets CONTROL_AE_LOCK=true, plus CONTROL_AWB_LOCK=true on supported hardware, preserving locked exposure (and color temperature) while reframing.
+- The lock UI appears only AFTER hardware AE lock request succeeds; unsupported AE lock devices show an explanation instead of faking a lock.
+- Sunlight icon with vertical dotted ruler adjacent to locked AF point. Drag UP to increase exposure compensation, DOWN to decrease (-/+ subject to camera's supported EV range). Camera2 allows EV compensation changes even while AE locked.
+- Tap to unlock and focus another point; AF button toggles lock. Switching front/rear camera or changing capture ratio unlocks to prevent stale state.
+- Preview UI overlay does NOT appear in saved photos or videos. Actual camera lock and EV behavior depend on device/firmware; physical lens changes may reset hardware camera state.
+- On-device shooting verification still required.
 
 ## v1.3.1 — system bar layout correction
 - Handle Android 15+ edge-to-edge system insets explicitly with WindowInsetsCompat.
