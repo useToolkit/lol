@@ -1,5 +1,23 @@
 # I photo — 갤럭시 전용 시네마틱 카메라
 
+## v1.5.0 — 개인정보 보호형 정식 Release 배포
+- Debug APK가 아닌 `assembleRelease` 빌드 (앱 디버깅 비활성).
+- Android SDK apksigner로 v1/v2/v3 서명 검증, SHA-256 및 매니페스트 권한 자동검사.
+- 카메라 앱 최초 실행에는 CAMERA 권한만 요청. 동영상 녹화 시에만 RECORD_AUDIO 권한 요청 (거절하면 무음 녹화).
+- INTERNET/ACCESS_NETWORK_STATE 권한이 라이브러리 합쳐지는 과정에서 추가되지 않도록 명시적으로 제거.
+- 외부 서버, 광고 SDK 및 수집/분석 SDK 없음 (현재 앱 소스/매니페스트 기준).
+- Release 서명키: GitHub Actions Secrets 네 가지가 설정되어 있을 경우 사용자 키를 사용.
+  Secrets가 없으면 Actions 실행 중 임시 키로 서명되며, 이는 **이후 버전 덮어쓰기를 보장하지 않습니다**. 임시 키는 업로드하지 않습니다.
+- 새 버전 APK: [I photo v1.5.0 Release 직접 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.5.0-release.apk)
+- **삼성 피싱앱 위험 경고를 회피/해제하거나 보안 심사를 우회하지 않습니다.** 삼성은 공식 스토어 외 설치, 설치 맥락, 권한 등의 신호를 사용할 수 있어 경고는 재발할 수 있습니다. 삼성멤버스 오탐 검토 또는 공식 스토어 배포가 필요할 수 있습니다.
+
+### 개인 서명키를 고정해 업데이트 설치하려면
+GitHub 저장소 Settings > Secrets and variables > Actions의 Repository secrets에 다음 네 가지를 입력하십시오.
+`I_PHOTO_KEYSTORE_B64` (Keystore의 Base64), `I_PHOTO_STORE_PASS`, `I_PHOTO_KEY_PASS`, `I_PHOTO_KEY_ALIAS`.
+**서명키나 비밀번호를 공개 저장소에 커밋하거나 채팅에 붙여 넣지 마세요.**
+현재 키가 등록되지 않은 경우 첫 Release는 임시 키로 서명되며 다음 새 Release 설치 시 기존 앱 제거가 필요합니다.
+
+
 > 첨부된 6장의 호텔·야경 레퍼런스를 참고해 만든 안드로이드 카메라 앱. 브랜드명: **I photo**.
 
 ## v1.1.0
@@ -11,7 +29,7 @@
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.4.0.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.5.0-release.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 

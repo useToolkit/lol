@@ -1,4 +1,4 @@
-name: Build I photo APK
+name: I photo — Signed Release APK
 
 on:
   push:
@@ -12,16 +12,17 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
-      - name: Checkout I photo
+      - name: Checkout verified app source
         uses: actions/checkout@v4
-      - name: Set up Java
+      - name: Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: Install Android SDK 36
+      - name: Install Android SDK tools
+        shell: bash
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "platform-tools"
@@ -29,29 +30,98 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Compile APK
-        run: gradle --no-daemon :app:assembleDebug --stacktrace
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk I-photo-v1.4.0.apk
-      - name: Upload installation package
+      - name: Assemble non-debug release
+        run: gradle --no-daemon :app:assembleRelease --stacktrace
+      - name: Sign release without publishing any private key
+        shell: bash
+        env:
+          IPHOTO_KEYSTORE_B64: ${{ secrets.I_PHOTO_KEYSTORE_B64 }}
+          IPHOTO_STORE_PASS: ${{ secrets.I_PHOTO_STORE_PASS }}
+          IPHOTO_KEY_PASS: ${{ secrets.I_PHOTO_KEY_PASS }}
+          IPHOTO_KEY_ALIAS: ${{ secrets.I_PHOTO_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          KEY="$RUNNER_TEMP/i-photo-release.jks"
+          # A persistent signing identity requires these four repository Secrets.
+          # In the absence of secrets, securely generate a one-run-only key.
+          # NEVER commit, upload, print, or publish the private key.
+          if [[ -n "$IPHOTO_KEYSTORE_B64" && -n "$IPHOTO_STORE_PASS" && -n "$IPHOTO_KEY_PASS" && -n "$IPHOTO_KEY_ALIAS" ]]; then
+            printf '%s' "$IPHOTO_KEYSTORE_B64" | base64 --decode > "$KEY"
+            SIGN_METHOD="user-provided persistent private signing key"
+          else
+            SIGN_METHOD="one-time release key (reinstall for future updates)"
+            IPHOTO_STORE_PASS="$(openssl rand -hex 24)"
+            IPHOTO_KEY_PASS="$IPHOTO_STORE_PASS"
+            IPHOTO_KEY_ALIAS="iphoto"
+            keytool -genkeypair -noprompt -keystore "$KEY" -storetype PKCS12 \
+              -storepass "$IPHOTO_STORE_PASS" -keypass "$IPHOTO_KEY_PASS" \
+              -alias "$IPHOTO_KEY_ALIAS" -keyalg RSA -keysize 3072 -validity 10000 \
+              -dname "CN=I photo Personal Camera, OU=Personal, O=I photo, C=KR"
+          fi
+          chmod 600 "$KEY"
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$UNSIGNED"
+          "$BT/zipalign" -f -p 4 "$UNSIGNED" "$RUNNER_TEMP/i-photo-aligned.apk"
+          "$BT/apksigner" sign --ks "$KEY" \
+            --ks-key-alias "$IPHOTO_KEY_ALIAS" \
+            --ks-pass env:IPHOTO_STORE_PASS --key-pass env:IPHOTO_KEY_PASS \
+            --out I-photo-v1.5.0-release.apk "$RUNNER_TEMP/i-photo-aligned.apk"
+          "$BT/apksigner" verify --verbose --print-certs I-photo-v1.5.0-release.apk \
+            | tee release-signature-report.txt
+          printf '\nSigning method: %s\n' "$SIGN_METHOD" >> release-signature-report.txt
+          sha256sum I-photo-v1.5.0-release.apk | tee release-sha256.txt
+          rm -f "$KEY" "$RUNNER_TEMP/i-photo-aligned.apk"
+      - name: Confirm minimal manifest permissions and release flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/aapt" dump badging I-photo-v1.5.0-release.apk > apk-identity.txt
+          "$BT/aapt" dump permissions I-photo-v1.5.0-release.apk > apk-permissions.txt
+          grep -q "package: name='com.usetoolkit.iphoto'" apk-identity.txt
+          grep -q "android.permission.CAMERA" apk-permissions.txt
+          grep -q "android.permission.RECORD_AUDIO" apk-permissions.txt
+          if grep -Eqi "application-debuggable" apk-identity.txt; then
+            echo "Security check failed: APK is debuggable"
+            exit 1
+          fi
+          if grep -Eq 'android.permission.(INTERNET|ACCESS_NETWORK_STATE|READ_SMS|SEND_SMS|READ_CONTACTS|READ_CALL_LOG|QUERY_ALL_PACKAGES)' apk-permissions.txt; then
+            echo "Security check failed: unexpected permissions found"
+            cat apk-permissions.txt
+            exit 1
+          fi
+          cat apk-identity.txt
+          cat apk-permissions.txt
+          echo "Passed: signed, non-debuggable, no network or SMS/contact permissions."
+      - name: Upload release APK and verification report
         uses: actions/upload-artifact@v4
         with:
-          name: I-photo-APK
-          path: I-photo-v1.4.0.apk
+          name: I-photo-v1.5.0-Release-APK
+          path: |
+            I-photo-v1.5.0-release.apk
+            apk-identity.txt
+            apk-permissions.txt
+            release-sha256.txt
+            release-signature-report.txt
           retention-days: 90
-      - name: Publish direct-download branch
+      - name: Publish direct APK download to GitHub
         if: github.ref == 'refs/heads/i-photo'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/iphoto-publish
-          cp I-photo-v1.4.0.apk /tmp/iphoto-publish/
-          cd /tmp/iphoto-publish
+          set -euo pipefail
+          mkdir -p /tmp/iphoto-release-publish
+          cp I-photo-v1.5.0-release.apk /tmp/iphoto-release-publish/
+          cp release-sha256.txt /tmp/iphoto-release-publish/
+          cp release-signature-report.txt /tmp/iphoto-release-publish/
+          cd /tmp/iphoto-release-publish
           git init -q
           git checkout -qb i-photo-apk
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add I-photo-v1.4.0.apk
-          git commit -qm 'Publish latest I photo debug APK'
+          git add I-photo-v1.5.0-release.apk release-sha256.txt release-signature-report.txt
+          git commit -qm 'Publish verified I photo v1.5 release (signed, no private keys)'
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin i-photo-apk

@@ -75,6 +75,8 @@ public final class MainActivity extends ComponentActivity {
     private static final int MUTED = Color.rgb(166, 166, 164);
 
     private ActivityResultLauncher<String[]> permissions;
+    private ActivityResultLauncher<String> microphonePermission;
+    private boolean microphonePermissionAsked = false;
     private LifecycleCameraController controller;
     private PreviewView preview;
     private FrameLayout previewStage, previewFrame;
@@ -139,10 +141,16 @@ public final class MainActivity extends ComponentActivity {
         permissions = registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
             Boolean granted = result.get(Manifest.permission.CAMERA);
             if (Boolean.TRUE.equals(granted) || hasCamera()) startCamera();
-            else showMessage("카메라 권한을 허용해야 촬영할 수 있습니다.");
+            else showMessage("사진 촬영에는 카메라 권한만 필요합니다.");
+        });
+        // Microphone is requested ONLY when recording a video, not when
+        // opening the camera or taking photos. The user can film silently.
+        microphonePermission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
+            if (!Boolean.TRUE.equals(granted)) showMessage("마이크 권한 없이 무음 동영상으로 촬영합니다.");
+            if (isVideo && recording == null && !busy && controller != null) startRecording();
         });
         if (hasCamera()) startCamera();
-        else permissions.launch(new String[] {Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO});
+        else permissions.launch(new String[] {Manifest.permission.CAMERA});
     }
 
     private void startCamera() {
@@ -631,8 +639,15 @@ public final class MainActivity extends ComponentActivity {
     private void onShutter() {
         if (controller == null) { showMessage("카메라를 준비하는 중입니다."); return; }
         if (isVideo) {
-            if (recording != null) stopRecording();
-            else startRecording();
+            if (recording != null) {
+                stopRecording();
+            } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED && !microphonePermissionAsked) {
+                microphonePermissionAsked = true;
+                microphonePermission.launch(Manifest.permission.RECORD_AUDIO);
+            } else {
+                startRecording();
+            }
         } else takePhoto();
     }
 
