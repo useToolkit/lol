@@ -834,6 +834,10 @@ public final class MainActivity extends ComponentActivity {
 
     private void onShutter() {
         if (boundCamera == null) { showMessage("카메라를 준비하는 중입니다."); return; }
+        if (afAeLockPending) {
+            showMessage("센서 잠금 결과를 확인한 뒤 촬영해 주세요.");
+            return;
+        }
         if (isVideo) {
             if (recording != null) {
                 stopRecording();
@@ -1430,7 +1434,14 @@ public final class MainActivity extends ComponentActivity {
             pen.setTextSize(dp(10));
             float tx=Math.max(dp(75),Math.min(getWidth()-dp(75),focusX));
             float ty=Math.max(dp(16),focusY-dp(44));
-            canvas.drawText("AE/AF LOCK",tx,ty,pen);
+            canvas.drawText(hardLockVerified ? "ISO / SHUTTER HOLD" :
+                "AE LOCK (LIMITED)",tx,ty,pen);
+            if(hardLockVerified && requestedShutterNs>0){
+                String sensorState="ISO "+requestedISO+"  ·  1/"+
+                    Math.max(1,Math.round(1000000000d/requestedShutterNs))+"s";
+                float secondLine=Math.min(getHeight()-dp(15),ty+dp(16));
+                canvas.drawText(sensorState,tx,secondLine,pen);
+            }
         }
     }
 

@@ -66,19 +66,19 @@ jobs:
           "$BT/apksigner" sign --ks "$KEY" \
             --ks-key-alias "$IPHOTO_KEY_ALIAS" \
             --ks-pass env:IPHOTO_STORE_PASS --key-pass env:IPHOTO_KEY_PASS \
-            --out I-photo-v1.5.0-release.apk "$RUNNER_TEMP/i-photo-aligned.apk"
-          "$BT/apksigner" verify --verbose --print-certs I-photo-v1.5.0-release.apk \
+            --out I-photo-v1.6.0-release.apk "$RUNNER_TEMP/i-photo-aligned.apk"
+          "$BT/apksigner" verify --verbose --print-certs I-photo-v1.6.0-release.apk \
             | tee release-signature-report.txt
           printf '\nSigning method: %s\n' "$SIGN_METHOD" >> release-signature-report.txt
-          sha256sum I-photo-v1.5.0-release.apk | tee release-sha256.txt
+          sha256sum I-photo-v1.6.0-release.apk | tee release-sha256.txt
           rm -f "$KEY" "$RUNNER_TEMP/i-photo-aligned.apk"
       - name: Confirm minimal manifest permissions and release flags
         shell: bash
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/36.0.0"
-          "$BT/aapt" dump badging I-photo-v1.5.0-release.apk > apk-identity.txt
-          "$BT/aapt" dump permissions I-photo-v1.5.0-release.apk > apk-permissions.txt
+          "$BT/aapt" dump badging I-photo-v1.6.0-release.apk > apk-identity.txt
+          "$BT/aapt" dump permissions I-photo-v1.6.0-release.apk > apk-permissions.txt
           grep -q "package: name='com.usetoolkit.iphoto'" apk-identity.txt
           grep -q "android.permission.CAMERA" apk-permissions.txt
           grep -q "android.permission.RECORD_AUDIO" apk-permissions.txt
@@ -97,9 +97,9 @@ jobs:
       - name: Upload release APK and verification report
         uses: actions/upload-artifact@v4
         with:
-          name: I-photo-v1.5.0-Release-APK
+          name: I-photo-v1.6.0-Release-APK
           path: |
-            I-photo-v1.5.0-release.apk
+            I-photo-v1.6.0-release.apk
             apk-identity.txt
             apk-permissions.txt
             release-sha256.txt
@@ -113,7 +113,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/iphoto-release-publish
-          cp I-photo-v1.5.0-release.apk /tmp/iphoto-release-publish/
+          cp I-photo-v1.6.0-release.apk /tmp/iphoto-release-publish/
           cp release-sha256.txt /tmp/iphoto-release-publish/
           cp release-signature-report.txt /tmp/iphoto-release-publish/
           cd /tmp/iphoto-release-publish
@@ -121,7 +121,7 @@ jobs:
           git checkout -qb i-photo-apk
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add I-photo-v1.5.0-release.apk release-sha256.txt release-signature-report.txt
+          git add I-photo-v1.6.0-release.apk release-sha256.txt release-signature-report.txt
           git commit -qm 'Publish verified I photo v1.5 release (signed, no private keys)'
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin i-photo-apk
