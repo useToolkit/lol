@@ -9,6 +9,9 @@ import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -31,9 +34,14 @@ import androidx.activity.ComponentActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.camera.camera2.interop.Camera2CameraControl;
+import androidx.camera.camera2.interop.Camera2Interop;
 import androidx.camera.camera2.interop.Camera2CameraInfo;
 import androidx.camera.camera2.interop.CaptureRequestOptions;
 import androidx.camera.core.CameraEffect;
+import androidx.camera.core.Camera;
+import androidx.camera.core.Preview;
+import androidx.camera.core.UseCaseGroup;
+import androidx.camera.core.ViewPort;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.FocusMeteringAction;
 import androidx.camera.core.FocusMeteringResult;
@@ -43,12 +51,15 @@ import androidx.camera.core.ImageCaptureException;
 import androidx.camera.core.ExposureState;
 import androidx.camera.media3.effect.Media3Effect;
 import androidx.camera.video.FallbackStrategy;
+import androidx.camera.video.PendingRecording;
+import androidx.camera.video.Recorder;
+import androidx.camera.video.VideoCapture;
 import androidx.camera.video.MediaStoreOutputOptions;
 import androidx.camera.video.Quality;
 import androidx.camera.video.QualitySelector;
 import androidx.camera.video.Recording;
 import androidx.camera.video.VideoRecordEvent;
-import androidx.camera.view.CameraController;
+import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.LifecycleCameraController;
 import androidx.camera.view.PreviewView;
 import androidx.camera.view.video.AudioConfig;
@@ -77,7 +88,22 @@ public final class MainActivity extends ComponentActivity {
     private ActivityResultLauncher<String[]> permissions;
     private ActivityResultLauncher<String> microphonePermission;
     private boolean microphonePermissionAsked = false;
-    private LifecycleCameraController controller;
+    // Explicit CameraX UseCaseGroup gives us per-frame Camera2 metadata that
+    // LifecycleCameraController previously hid, needed for real sensor exposure lock.
+    private ProcessCameraProvider cameraProvider;
+    private Camera boundCamera;
+    private Preview previewUseCase;
+    private ImageCapture imageCapture;
+    private Recorder videoRecorder;
+    private VideoCapture<Recorder> videoCapture;
+    private boolean cameraInitializationStarted = false;
+    private volatile long lastCaptureTimeMs = 0;
+    private volatile long lastSensorExposureNs = 0;
+    private volatile int lastSensorISO = 0;
+    private volatile float lastLensFocusDistance = -1f;
+    private volatile int lastResultAeMode = -1;
+    private volatile boolean lastResultAeLocked = false;
+    private volatile int lastResultAwbMode = -1;
     private PreviewView preview;
     private FrameLayout previewStage, previewFrame;
     private LinearLayout bottomControls;
@@ -147,14 +173,15 @@ public final class MainActivity extends ComponentActivity {
         // opening the camera or taking photos. The user can film silently.
         microphonePermission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
             if (!Boolean.TRUE.equals(granted)) showMessage("마이크 권한 없이 무음 동영상으로 촬영합니다.");
-            if (isVideo && recording == null && !busy && controller != null) startRecording();
+            if (isVideo && recording == null && !busy && boundCamera != null) startRecording();
         });
         if (hasCamera()) startCamera();
         else permissions.launch(new String[] {Manifest.permission.CAMERA});
     }
 
     private void startCamera() {
-        if (controller != null) return;
+        if (cameraInitializationStarted) return;
+        cameraInitializationStarted = true;
         try {
             media3 = new Media3Effect(this,
                 CameraEffect.PREVIEW | CameraEffect.VIDEO_CAPTURE | CameraEffect.IMAGE_CAPTURE,
@@ -163,27 +190,94 @@ public final class MainActivity extends ComponentActivity {
                     showMessage("효과 처리 오류: 다시 실행해 주세요.");
                 });
             media3.setEffects(Collections.singletonList(ColorLooks.generate(selected, intensity)));
-            controller = new LifecycleCameraController(this);
-            controller.setEnabledUseCases(CameraController.IMAGE_CAPTURE | CameraController.VIDEO_CAPTURE);
-            controller.setImageCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY);
-            controller.setVideoCaptureQualitySelector(QualitySelector.from(
-                Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.FHD)));
-            controller.setPinchToZoomEnabled(true);
-            // Handle both tap focus and press-and-hold AF lock ourselves.
-            controller.setTapToFocusEnabled(false);
-            controller.setEffects(Collections.singleton(media3));
-            preview.setController(controller);
-            controller.bindToLifecycle(this);
-            lastExposureIndex = Integer.MIN_VALUE;
             enableFocusGestures();
-            // Slightly darker capture exposure is intentional for luxury-night scenes.
-            preview.postDelayed(() -> setExposureEv(currentEv), 900);
-            setInfo();
+            ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
+            future.addListener(() -> {
+                try {
+                    cameraProvider = future.get();
+                    preview.post(this::bindCameraUseCases);
+                } catch (Exception e) {
+                    cameraInitializationStarted = false;
+                    Log.e(TAG, "Camera provider failed", e);
+                    showMessage("카메라 연결에 실패했습니다.");
+                }
+            }, ContextCompat.getMainExecutor(this));
         } catch (Exception e) {
+            cameraInitializationStarted = false;
             Log.e(TAG, "Unable to initialize camera", e);
             showMessage("카메라 초기화 실패: " + e.getClass().getSimpleName());
         }
     }
+
+    /** Rebind all captures at once, ensuring the preview crop matches saved media. */
+    private void bindCameraUseCases() {
+        if (cameraProvider == null || preview.getWidth() == 0 || preview.getHeight() == 0) {
+            preview.postDelayed(this::bindCameraUseCases, 110);
+            return;
+        }
+        if (recording != null) return;
+        try {
+            if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
+            boundCamera = null;
+            cameraProvider.unbindAll();
+            lastCaptureTimeMs = 0;
+            lastSensorExposureNs = 0;
+            lastSensorISO = 0;
+            lastLensFocusDistance = -1f;
+            lastResultAeMode = -1;
+            Preview.Builder pb = new Preview.Builder();
+            new Camera2Interop.Extender<>(pb).setSessionCaptureCallback(
+                new CameraCaptureSession.CaptureCallback() {
+                    @Override
+                    public void onCaptureCompleted(android.hardware.camera2.CameraCaptureSession session,
+                            CaptureRequest request, TotalCaptureResult result) {
+                        Long exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                        Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
+                        Float focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
+                        Integer aeMode = result.get(CaptureResult.CONTROL_AE_MODE);
+                        Boolean aeLock = result.get(CaptureResult.CONTROL_AE_LOCK);
+                        Integer awbMode = result.get(CaptureResult.CONTROL_AWB_MODE);
+                        if (exp != null && exp > 0L && iso != null && iso > 0) {
+                            lastSensorExposureNs = exp;
+                            lastSensorISO = iso;
+                            lastCaptureTimeMs = android.os.SystemClock.elapsedRealtime();
+                        }
+                        if (focus != null) lastLensFocusDistance = focus;
+                        if (aeMode != null) lastResultAeMode = aeMode;
+                        lastResultAeLocked = Boolean.TRUE.equals(aeLock);
+                        if (awbMode != null) lastResultAwbMode = awbMode;
+                        inspectSensorLockResult(result);
+                    }
+                });
+            previewUseCase = pb.build();
+            previewUseCase.setSurfaceProvider(preview.getSurfaceProvider());
+            imageCapture = new ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
+            imageCapture.setFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
+            videoRecorder = new Recorder.Builder().setQualitySelector(QualitySelector.from(
+                Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.FHD))).build();
+            videoCapture = VideoCapture.withOutput(videoRecorder);
+            UseCaseGroup.Builder group = new UseCaseGroup.Builder()
+                .addUseCase(previewUseCase).addUseCase(imageCapture)
+                .addUseCase(videoCapture).addEffect(media3);
+            ViewPort vp = preview.getViewPort();
+            if (vp != null) group.setViewPort(vp);
+            boundCamera = cameraProvider.bindToLifecycle(this,
+                isFront ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA,
+                group.build());
+            if (boundCamera != null && flash && isVideo)
+                boundCamera.getCameraControl().enableTorch(true);
+            lastExposureIndex = Integer.MIN_VALUE;
+            handler.postDelayed(() -> setExposureEv(currentEv), 800);
+            setInfo();
+        } catch (Exception e) {
+            Log.e(TAG, "Camera bind failed", e);
+            showMessage("카메라 연결 오류: " + e.getClass().getSimpleName());
+        }
+    }
+
+    // Replaced by the sensor exposure verification implementation below.
+    private void inspectSensorLockResult(TotalCaptureResult result) { }
 
 
     private void buildInterface() {
@@ -541,17 +635,7 @@ public final class MainActivity extends ComponentActivity {
         // Reattach after PreviewView receives its new size. CameraX uses this
         // viewport for photo/video crop rectangles, not merely a visual mask.
         preview.postDelayed(() -> {
-            if (controller == null || recording != null) return;
-            try {
-                controller.unbind();
-                preview.setController(null);
-                preview.setController(controller);
-                controller.bindToLifecycle(this);
-                setExposureEv(currentEv);
-            } catch (Exception e) {
-                Log.e(TAG, "Ratio rebind failed", e);
-                showMessage("비율 변경 실패, 카메라를 다시 실행해 주세요.");
-            }
+            if (cameraProvider != null && recording == null) bindCameraUseCases();
         }, 130);
     }
 
@@ -637,7 +721,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void onShutter() {
-        if (controller == null) { showMessage("카메라를 준비하는 중입니다."); return; }
+        if (boundCamera == null) { showMessage("카메라를 준비하는 중입니다."); return; }
         if (isVideo) {
             if (recording != null) {
                 stopRecording();
@@ -662,7 +746,7 @@ public final class MainActivity extends ComponentActivity {
         ImageCapture.OutputFileOptions options = new ImageCapture.OutputFileOptions.Builder(
             getContentResolver(), MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values).build();
         try {
-            controller.takePicture(options, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
+            imageCapture.takePicture(options, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
                 @Override public void onImageSaved(ImageCapture.OutputFileResults result) {
                     busy = false;
                     capture.setAlpha(1f);
@@ -774,9 +858,9 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private boolean isAELockSupported(){
-        if(controller==null || controller.getCameraInfo()==null)return false;
+        if(controller==null || boundCamera.getCameraInfo()==null)return false;
         try{
-            Boolean b=Camera2CameraInfo.from(controller.getCameraInfo())
+            Boolean b=Camera2CameraInfo.from(boundCamera.getCameraInfo())
                 .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE);
             return Boolean.TRUE.equals(b);
         }catch(Exception e){
@@ -786,16 +870,16 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private boolean isAWBLockSupported(){
-        if(controller==null || controller.getCameraInfo()==null)return false;
+        if(controller==null || boundCamera.getCameraInfo()==null)return false;
         try{
-            Boolean b=Camera2CameraInfo.from(controller.getCameraInfo())
+            Boolean b=Camera2CameraInfo.from(boundCamera.getCameraInfo())
                 .getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE);
             return Boolean.TRUE.equals(b);
         }catch(Exception e){return false;}
     }
 
     private void focusAt(float x,float y,boolean lock){
-        if(controller==null||controller.getCameraControl()==null||
+        if(controller==null||boundCamera.getCameraControl()==null||
             preview.getWidth()<2||preview.getHeight()<2)return;
         if(focusLocked || aeLocked || afAeLockPending)unlockFocus();
         x=Math.max(1,Math.min(preview.getWidth()-1,x));
@@ -815,7 +899,7 @@ public final class MainActivity extends ComponentActivity {
                     FocusMeteringAction.FLAG_AWB);
             if(requestedLock)builder.disableAutoCancel();
             ListenableFuture<FocusMeteringResult> focusFuture=
-                controller.getCameraControl().startFocusAndMetering(builder.build());
+                boundCamera.getCameraControl().startFocusAndMetering(builder.build());
             afAeLockPending=requestedLock;
             if(requestedLock && focusButton!=null)focusButton.setText("초점 조정 중");
             if(!requestedLock){
@@ -828,7 +912,7 @@ public final class MainActivity extends ComponentActivity {
                         if(!res.isFocusSuccessful()){
                             afAeLockPending=false;
                             showMessage("초점을 확정하지 못했습니다. 다시 길게 눌러주세요.");
-                            controller.getCameraControl().cancelFocusAndMetering();
+                            boundCamera.getCameraControl().cancelFocusAndMetering();
                             showFocusTarget(targetX,targetY);
                             return;
                         }
@@ -853,14 +937,14 @@ public final class MainActivity extends ComponentActivity {
 
     private void applyHardwareLock(long serial,float x,float y){
         if(serial!=focusRequestSerial || !afAeLockPending || controller==null||
-            controller.getCameraControl()==null)return;
+            boundCamera.getCameraControl()==null)return;
         final boolean awb=isAWBLockSupported();
         try{
             CaptureRequestOptions.Builder options=new CaptureRequestOptions.Builder()
                 .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,true);
             if(awb)options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK,true);
             ListenableFuture<Void> applied=Camera2CameraControl
-                .from(controller.getCameraControl()).addCaptureRequestOptions(options.build());
+                .from(boundCamera.getCameraControl()).addCaptureRequestOptions(options.build());
             applied.addListener(()->{
                 if(serial!=focusRequestSerial)return;
                 try{
@@ -880,8 +964,8 @@ public final class MainActivity extends ComponentActivity {
                     Log.e(TAG,"Hardware AE lock failed",e);
                     showMessage("카메라가 노출 고정을 적용하지 못했습니다.");
                     if(focusButton!=null)focusButton.setText("AF");
-                    if(controller!=null && controller.getCameraControl()!=null)
-                        controller.getCameraControl().cancelFocusAndMetering();
+                    if(controller!=null && boundCamera.getCameraControl()!=null)
+                        boundCamera.getCameraControl().cancelFocusAndMetering();
                 }
             },ContextCompat.getMainExecutor(this));
         }catch(Exception e){
@@ -893,8 +977,8 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private boolean canAdjustExposure(){
-        if(controller==null || controller.getCameraInfo()==null)return false;
-        ExposureState state=controller.getCameraInfo().getExposureState();
+        if(controller==null || boundCamera.getCameraInfo()==null)return false;
+        ExposureState state=boundCamera.getCameraInfo().getExposureState();
         return state!=null && state.isExposureCompensationSupported() &&
             state.getExposureCompensationStep().floatValue()>0f &&
             state.getExposureCompensationRange().getUpper()>
@@ -906,17 +990,17 @@ public final class MainActivity extends ComponentActivity {
         ++focusRequestSerial; // Reject any delayed lock completion after unlock.
         afAeLockPending=false;focusLocked=false;aeLocked=false;awbLocked=false;
         draggingSun=false;
-        if(controller!=null && controller.getCameraControl()!=null){
+        if(controller!=null && boundCamera.getCameraControl()!=null){
             try{
                 if(hadAE){
                     CaptureRequestOptions opts=new CaptureRequestOptions.Builder()
                         .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK,false)
                         .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK,false)
                         .build();
-                    Camera2CameraControl.from(controller.getCameraControl())
+                    Camera2CameraControl.from(boundCamera.getCameraControl())
                         .addCaptureRequestOptions(opts);
                 }
-                controller.getCameraControl().cancelFocusAndMetering();
+                boundCamera.getCameraControl().cancelFocusAndMetering();
             }catch(Exception e){Log.w(TAG,"AE/AF unlock error",e);}
         }
         if(focusIndicator!=null)focusIndicator.setVisibility(View.GONE);
@@ -964,8 +1048,9 @@ public final class MainActivity extends ComponentActivity {
         boolean hasMic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED;
         try {
-            recording = controller.startRecording(options, hasMic ? AudioConfig.create(true) : AudioConfig.AUDIO_DISABLED,
-                ContextCompat.getMainExecutor(this), event -> {
+            PendingRecording pending = videoRecorder.prepareRecording(this, options);
+            if (hasMic) pending = pending.withAudioEnabled();
+            recording = pending.start(ContextCompat.getMainExecutor(this), event -> {
                     if (event instanceof VideoRecordEvent.Start) {
                         startedAt = android.os.SystemClock.elapsedRealtime();
                         recordTimer.setVisibility(View.VISIBLE);
@@ -1003,9 +1088,9 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setExposureEv(float ev) {
-        if (controller == null || controller.getCameraInfo() == null ||
-            controller.getCameraControl() == null) return;
-        ExposureState state = controller.getCameraInfo().getExposureState();
+        if (boundCamera == null || boundCamera.getCameraInfo() == null ||
+            boundCamera.getCameraControl() == null) return;
+        ExposureState state = boundCamera.getCameraInfo().getExposureState();
         if (state == null || !state.isExposureCompensationSupported()) return;
         float step = state.getExposureCompensationStep().floatValue();
         if (step <= 0f) return;
@@ -1018,7 +1103,7 @@ public final class MainActivity extends ComponentActivity {
         if (lastExposureIndex == index) return;
         lastExposureIndex = index;
         try {
-            controller.getCameraControl().setExposureCompensationIndex(index);
+            boundCamera.getCameraControl().setExposureCompensationIndex(index);
         } catch (Exception e) {
             Log.e(TAG,"Exposure compensation failed",e);
             lastExposureIndex = Integer.MIN_VALUE;
@@ -1026,22 +1111,21 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setZoom(float ratio) {
-        if (controller == null) return;
+        if (boundCamera == null) return;
         try {
-            controller.setZoomRatio(ratio);
+            boundCamera.getCameraControl().setZoomRatio(ratio);
             cameraZoom = ratio;
         }
         catch (Exception ignored) { showMessage("이 배율은 지원되지 않습니다."); }
     }
 
     private void switchCamera() {
-        if (controller == null || recording != null || busy) return;
+        if (boundCamera == null || recording != null || busy) return;
         try {
             unlockFocus();
             lastExposureIndex = Integer.MIN_VALUE;
             isFront = !isFront;
-            controller.setCameraSelector(isFront ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA);
-            setExposureEv(currentEv);
+            bindCameraUseCases();
         } catch (Exception e) {
             isFront = !isFront;
             showMessage("이 카메라를 사용할 수 없습니다.");
@@ -1049,12 +1133,12 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void toggleFlash() {
-        if (controller == null) return;
+        if (boundCamera == null) return;
         flash = !flash;
         flashButton.setText(flash ? "⚡ 켬" : "⚡ 끔");
-        controller.setImageCaptureFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
+        if (imageCapture != null) imageCapture.setFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
         // Video uses torch rather than still-image flash.
-        try { controller.enableTorch(flash && isVideo); } catch (Exception ignored) {}
+        try { boundCamera.getCameraControl().enableTorch(flash && isVideo); } catch (Exception ignored) {}
     }
 
     private void openGallery() {
@@ -1123,7 +1207,7 @@ public final class MainActivity extends ComponentActivity {
         if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
         if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
         if (recording != null) recording.stop();
-        if (controller != null) controller.unbind();
+        if (cameraProvider != null) cameraProvider.unbindAll();
         if (media3 != null) media3.close();
         super.onDestroy();
     }
