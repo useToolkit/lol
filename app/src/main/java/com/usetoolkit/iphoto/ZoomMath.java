@@ -19,7 +19,7 @@ public final class ZoomMath {
     }
     public static float ratio(float position,float min,float max){
         if(max<=min)return min;
-        float p=limit(position,0f,1f);
+        float p=Float.isFinite(position)?Math.max(0f,Math.min(1f,position)):0f;
         return limit((float)(min*Math.exp(Math.log(max/min)*p)),min,max);
     }
     public static float drag(float initial,float deltaPixels,float pxPerOctave,float min,float max){
