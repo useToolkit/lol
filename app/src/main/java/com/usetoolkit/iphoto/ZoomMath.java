@@ -22,6 +22,10 @@ public final class ZoomMath {
         float p=Float.isFinite(position)?Math.max(0f,Math.min(1f,position)):0f;
         return limit((float)(min*Math.exp(Math.log(max/min)*p)),min,max);
     }
+    public static boolean isHorizontalDrag(float dx,float dy,float touchSlop){
+        if(!Float.isFinite(dx)||!Float.isFinite(dy))return false;
+        return Math.abs(dx)>touchSlop && Math.abs(dx)>Math.abs(dy)*1.15f;
+    }
     public static float drag(float initial,float deltaPixels,float pxPerOctave,float min,float max){
         if(pxPerOctave<=0)return limit(initial,min,max);
         double octaves=deltaPixels/pxPerOctave;

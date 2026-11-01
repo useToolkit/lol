@@ -22,6 +22,21 @@ public final class ZoomMathTest {
     assertArrayEquals(new float[]{1f,2f,3f,5f},ZoomMath.presets(1f,6f),0f);
     assertArrayEquals(new float[]{.5f,1f,2f,3f,5f,8f},ZoomMath.presets(.5f,9f),0f);
  }
+ @Test public void horizontalSwipeActivatesWithoutWaitingForLongPress(){
+    assertTrue(ZoomMath.isHorizontalDrag(14f,2f,7f));
+    assertTrue(ZoomMath.isHorizontalDrag(-17f,1f,7f));
+    assertFalse(ZoomMath.isHorizontalDrag(4f,0f,7f));
+    assertFalse(ZoomMath.isHorizontalDrag(12f,40f,7f));
+    assertFalse(ZoomMath.isHorizontalDrag(Float.NaN,0f,7f));
+ }
+ @Test public void dragIsReversibleAndClampsAtHardwareEnds(){
+    float start=2f;
+    float zoomed=ZoomMath.drag(start,140,140,1f,8f);
+    assertEquals(4f,zoomed,.001f);
+    assertEquals(start,ZoomMath.drag(zoomed,-140,140,1f,8f),.001f);
+    assertEquals(1f,ZoomMath.drag(start,-800,140,1f,8f),0f);
+    assertEquals(8f,ZoomMath.drag(start,800,140,1f,8f),0f);
+ }
  @Test public void midpointIsGeometricNotLinear(){
     assertEquals(2f,ZoomMath.ratio(.5f,1f,4f),.001f);
  }

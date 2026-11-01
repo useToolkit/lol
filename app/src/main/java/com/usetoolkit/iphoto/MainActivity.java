@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.animation.ValueAnimator;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.hardware.camera2.CameraCharacteristics;
@@ -155,8 +157,12 @@ public final class MainActivity extends ComponentActivity {
     private float focusX = -1f, focusY = -1f, touchX, touchY, lastPinchDistance, cameraZoom = 1f;
     private float zoomMin=1f,zoomMax=6f;
     private LinearLayout zoomRow;
+    private LinearLayout presetControls;
+    private FrameLayout rootView;
+    private ZoomControlView zoomControl;
     private ZoomDialView zoomDial;
-    private TextView[] zoomButtons=new TextView[0];
+    // Zoom is ONE continuous drag target. Preset labels are drawn, not buttons.
+    // This prevents a small move cancelling the touch before long-press fires.
     private float[] zoomStops=new float[0];
     private LiveData<ZoomState> zoomStateLiveData;
     private Observer<ZoomState> zoomStateObserver;
@@ -165,6 +171,12 @@ public final class MainActivity extends ComponentActivity {
     private boolean zoomHoldActive=false, zoomTouchMoved=false;
     private float zoomTouchBeginX, zoomHoldBaseRatio;
     private long lastZoomSentAt=0L;
+    private long zoomDisplaySettleUntil=0L;
+    private float zoomPendingRatio=1f;
+    private boolean zoomGestureActive=false;
+    private Runnable zoomPendingDispatch;
+    private float zoomTouchBeginY;
+    private float zoomWheelStartX,zoomWheelStartRatio;
     private Runnable pendingFocusLock;
     private ExposureSunGuide exposureSunGuide;
     private boolean aeLocked = false;
@@ -680,6 +692,7 @@ public final class MainActivity extends ComponentActivity {
 
     private void buildInterface() {
         FrameLayout root = new FrameLayout(this);
+        rootView=root;
         root.setBackgroundColor(INK);
         setContentView(root);
         // FrameLayout padding is honored by ALL gravity-based children, so
@@ -817,6 +830,7 @@ public final class MainActivity extends ComponentActivity {
             new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
         LinearLayout presetRow = new LinearLayout(this);
+        presetControls=presetRow;
         presetRow.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams pr = new LinearLayout.LayoutParams(-1, dp(50));
         bottom.addView(presetRow, pr);
@@ -841,16 +855,21 @@ public final class MainActivity extends ComponentActivity {
             chip.setOnClickListener(v -> selectLook(look));
         }
 
-        // iPhone-like zoom interactions: tap focal presets, hold and slide,
-        // or pinch anywhere on the camera preview. The list is rebuilt from
-        // the camera's actual ZoomState range; unsupported 0.5x is not faked.
-        zoomDial=new ZoomDialView();
-        zoomDial.setVisibility(View.GONE);
-        zoomDial.setContentDescription("연속 줌 다이얼. 좌우로 드래그하여 확대·축소");
-        bottom.addView(zoomDial,new LinearLayout.LayoutParams(-1,dp(68)));
+        // The entire iPhone-style zoom strip is ONE drag surface.
+        // IMPORTANT: the curved wheel is a FrameLayout overlay, NOT a child of
+        // bottomControls; revealing it must NOT shift controls under the finger.
         zoomRow=new LinearLayout(this);
         zoomRow.setGravity(Gravity.CENTER);
-        bottom.addView(zoomRow,new LinearLayout.LayoutParams(-1,dp(50)));
+        bottom.addView(zoomRow,new LinearLayout.LayoutParams(-1,dp(54)));
+        zoomDial=new ZoomDialView();
+        zoomDial.setVisibility(View.GONE);
+        zoomDial.setAlpha(0f);
+        zoomDial.setContentDescription("원호 줌 다이얼. 좌우로 드래그하여 연속 확대·축소");
+        FrameLayout.LayoutParams wheelLp=new FrameLayout.LayoutParams(
+            -1,dp(142),Gravity.TOP);
+        wheelLp.topMargin=dp(200);
+        root.addView(zoomDial,wheelLp);
+        zoomDial.setElevation(dp(10));
         rebuildZoomButtons();
 
         LinearLayout shutterRow = new LinearLayout(this);
@@ -1517,6 +1536,7 @@ public final class MainActivity extends ComponentActivity {
                     pinchActive=true;
                     lastPinchDistance=fingerDistance(e);
                     cancelZoomAnimation();
+                    zoomGestureActive=true;
                     revealZoomDial();
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -1543,6 +1563,8 @@ public final class MainActivity extends ComponentActivity {
                     return true;
                 case MotionEvent.ACTION_POINTER_UP:
                     if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
+                    zoomGestureActive=false;
+                    flushZoomRequest();
                     scheduleHideZoomDial();
                     return true;
                 case MotionEvent.ACTION_UP:
@@ -1553,7 +1575,10 @@ public final class MainActivity extends ComponentActivity {
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     draggingSun=false;
+                    zoomGestureActive=false;
+                    flushZoomRequest();
                     if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
+                    scheduleHideZoomDial();
                     return true;
                 default:return true;
             }
@@ -1957,6 +1982,7 @@ public final class MainActivity extends ComponentActivity {
         }catch(Exception e){Log.e(TAG,"Manual exposure adjust failed",e);}
     }
 
+    /** ZoomState from CameraX is authoritative for supported min/max values. */
     private void attachZoomState(){
         detachZoomState();
         if(boundCamera==null)return;
@@ -1968,7 +1994,12 @@ public final class MainActivity extends ComponentActivity {
             boolean rangeChanged=Math.abs(zoomMin-lower)>.015f ||
                 Math.abs(zoomMax-upper)>.015f;
             zoomMin=lower;zoomMax=upper;
-            cameraZoom=ZoomMath.limit(state.getZoomRatio(),zoomMin,zoomMax);
+            // CameraX emits async intermediate ratios. Do not rewind the
+            // on-screen scrub while a finger is dragging or a command is settling.
+            long now=android.os.SystemClock.elapsedRealtime();
+            if(!zoomGestureActive && now>=zoomDisplaySettleUntil)
+                cameraZoom=ZoomMath.limit(state.getZoomRatio(),zoomMin,zoomMax);
+            else cameraZoom=ZoomMath.limit(cameraZoom,zoomMin,zoomMax);
             if(rangeChanged)rebuildZoomButtons();
             updateZoomVisuals();
         };
@@ -1979,77 +2010,42 @@ public final class MainActivity extends ComponentActivity {
     private void detachZoomState(){
         if(zoomStateLiveData!=null && zoomStateObserver!=null)
             zoomStateLiveData.removeObserver(zoomStateObserver);
-        zoomStateLiveData=null;zoomStateObserver=null;
+        zoomStateLiveData=null;
+        zoomStateObserver=null;
     }
+
+    /**
+     * A single wide, uninterrupted touch target. Press+move immediately
+     * activates the wheel even before the long-press timeout (the previous
+     * implementation incorrectly cancelled the gesture on early motion).
+     * Quick tap remains a shortcut to a camera-supported focal stop.
+     */
     private void rebuildZoomButtons(){
         if(zoomRow==null)return;
+        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
         zoomRow.removeAllViews();
         zoomStops=ZoomMath.presets(zoomMin,zoomMax);
-        zoomButtons=new TextView[zoomStops.length];
-        for(int i=0;i<zoomStops.length;i++){
-            final float stop=zoomStops[i];
-            TextView button=label(zoomLabel(stop),13,WHITE,Typeface.BOLD);
-            button.setGravity(Gravity.CENTER);
-            button.setContentDescription(zoomLabel(stop)+
-                " 배율로 전환. 길게 눌러 다이얼 연 다음 가로로 드래그");
-            button.setMinimumHeight(dp(48));
-            button.setBackground(shape(0xB0252A2F,dp(26),0,0));
-            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),1f);
-            lp.setMargins(dp(2),0,dp(2),0);
-            zoomRow.addView(button,lp);
-            zoomButtons[i]=button;
-            button.setOnClickListener(v->animateZoomTo(stop));
-            button.setOnTouchListener((view,event)->{
-                switch(event.getActionMasked()){
-                    case MotionEvent.ACTION_DOWN:
-                        zoomHoldActive=false;zoomTouchMoved=false;
-                        zoomTouchBeginX=event.getRawX();
-                        zoomHoldBaseRatio=cameraZoom;
-                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
-                        zoomHoldTask=()->{
-                            zoomHoldActive=true;
-                            revealZoomDial();
-                            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-                        };
-                        handler.postDelayed(zoomHoldTask,360L);
-                        return true;
-                    case MotionEvent.ACTION_MOVE:
-                        float dx=event.getRawX()-zoomTouchBeginX;
-                        if(!zoomHoldActive && Math.abs(dx)>dp(13)){
-                            zoomTouchMoved=true;
-                            if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
-                        }
-                        if(zoomHoldActive)
-                            setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(135),
-                                zoomMin,zoomMax));
-                        return true;
-                    case MotionEvent.ACTION_UP:
-                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
-                        if(zoomHoldActive){zoomHoldActive=false;scheduleHideZoomDial();}
-                        else if(!zoomTouchMoved)view.performClick();
-                        return true;
-                    case MotionEvent.ACTION_CANCEL:
-                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
-                        zoomHoldActive=false;return true;
-                    default:return true;
-                }
-            });
-        }
+        zoomControl=new ZoomControlView();
+        zoomControl.setContentDescription(
+            "연속 줌 "+zoomLabel(cameraZoom)+
+            ". 배율을 누른 채 좌우로 끌면 바로 확대·축소됩니다. 길게 누르면 원호 다이얼이 나타납니다.");
+        zoomRow.addView(zoomControl,new LinearLayout.LayoutParams(-1,dp(52)));
         updateZoomVisuals();
     }
     private String zoomLabel(float value){
-        return String.format(Locale.US,Math.abs(value-Math.round(value))<.05f?
-            "%.0f×":"%.1f×",value);
+        if(value>=10f)return String.format(Locale.US,"%.0f×",value);
+        if(Math.abs(value-Math.round(value))<.045f)
+            return String.format(Locale.US,"%.0f×",value);
+        return String.format(Locale.US,"%.1f×",value);
     }
     private void updateZoomVisuals(){
-        if(zoomDial!=null)zoomDial.invalidate();
-        if(zoomButtons==null)return;
-        for(int i=0;i<zoomButtons.length && i<zoomStops.length;i++){
-            TextView button=zoomButtons[i];
-            boolean active=Math.abs(Math.log(Math.max(.1f,cameraZoom)/zoomStops[i]))<.13f;
-            button.setTextColor(active?INK:WHITE);
-            button.setBackground(shape(active?GOLD:0xA5292D31,dp(24),0,0));
+        if(zoomControl!=null){
+            zoomControl.invalidate();
+            zoomControl.setContentDescription(
+                "현재 줌 "+zoomLabel(cameraZoom)+
+                ". 좌우로 끌어 연속 줌, 짧게 눌러 표시된 배율 선택");
         }
+        if(zoomDial!=null)zoomDial.invalidate();
     }
     private void cancelZoomAnimation(){
         if(zoomAnimator!=null){
@@ -2061,93 +2057,317 @@ public final class MainActivity extends ComponentActivity {
         if(boundCamera==null)return;
         cancelZoomAnimation();
         float start=cameraZoom,target=ZoomMath.limit(ratio,zoomMin,zoomMax);
-        if(Math.abs(start-target)<.01f){setZoomDirect(target);return;}
-        zoomAnimator=ValueAnimator.ofFloat(start,target);
-        zoomAnimator.setDuration(210L);
-        zoomAnimator.setInterpolator(new DecelerateInterpolator());
-        zoomAnimator.addUpdateListener(a->setZoomDirect((float)a.getAnimatedValue()));
-        zoomAnimator.start();
-        scheduleHideZoomDial();
+        if(Math.abs(start-target)<.004f){setZoomDirect(target);flushZoomRequest();return;}
+        final ValueAnimator a=ValueAnimator.ofFloat(start,target);
+        zoomAnimator=a;
+        a.setDuration(230L);
+        a.setInterpolator(new DecelerateInterpolator());
+        a.addUpdateListener(animation->setZoomDirect((float)animation.getAnimatedValue()));
+        a.addListener(new AnimatorListenerAdapter(){
+            @Override public void onAnimationEnd(Animator animation){
+                if(zoomAnimator==a){
+                    setZoomDirect(target);
+                    flushZoomRequest();
+                    zoomAnimator=null;
+                }
+            }
+        });
+        a.start();
     }
     private void setZoom(float ratio){animateZoomTo(ratio);}
+
+    /** UI refreshes instantly; Camera2 commands are coalesced to ~60Hz. */
     private void setZoomDirect(float ratio){
         if(boundCamera==null)return;
         float wanted=ZoomMath.limit(ratio,zoomMin,zoomMax);
-        if(Math.abs(wanted-cameraZoom)<.003f)return;
-        long now=android.os.SystemClock.elapsedRealtime();
-        if(now-lastZoomSentAt<18L)return;
-        lastZoomSentAt=now;
-        try{
-            boundCamera.getCameraControl().setZoomRatio(wanted);
-            cameraZoom=wanted;
-            updateZoomVisuals();
-        }catch(Exception e){Log.w(TAG,"Zoom request failed",e);}
+        cameraZoom=wanted;
+        zoomPendingRatio=wanted;
+        updateZoomVisuals();
+        long elapsed=android.os.SystemClock.elapsedRealtime()-lastZoomSentAt;
+        if(elapsed>=17L){
+            flushZoomRequest();
+        }else if(zoomPendingDispatch==null){
+            zoomPendingDispatch=()->{
+                zoomPendingDispatch=null;
+                flushZoomRequest();
+            };
+            handler.postDelayed(zoomPendingDispatch,17L-Math.max(0L,elapsed));
+        }
     }
+    private void flushZoomRequest(){
+        if(zoomPendingDispatch!=null){
+            handler.removeCallbacks(zoomPendingDispatch);
+            zoomPendingDispatch=null;
+        }
+        if(boundCamera==null)return;
+        float wanted=ZoomMath.limit(zoomPendingRatio,zoomMin,zoomMax);
+        lastZoomSentAt=android.os.SystemClock.elapsedRealtime();
+        zoomDisplaySettleUntil=lastZoomSentAt+430L;
+        try {
+            boundCamera.getCameraControl().setZoomRatio(wanted);
+        }catch(Exception e){Log.w(TAG,"Zoom camera control rejected value",e);}
+    }
+
+    private void beginZoomScrub(View target){
+        if(zoomHoldActive || boundCamera==null)return;
+        zoomHoldActive=true;
+        zoomTouchMoved=true;
+        zoomGestureActive=true;
+        cancelZoomAnimation();
+        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+        zoomHoldBaseRatio=cameraZoom; // start from ACTUAL current zoom, no jump
+        revealZoomDial();
+        target.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+    }
+    private void finishZoomScrub(){
+        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+        zoomHoldActive=false;
+        zoomGestureActive=false;
+        flushZoomRequest();
+        scheduleHideZoomDial();
+    }
+
+    /**
+     * Always-visible zoom strip: selected magnification lives inside a gold
+     * bubble, preset names are surrounding shortcuts, not discrete zoom-only
+     * buttons. One finger can drag anywhere in this strip.
+     */
+    private final class ZoomControlView extends View {
+        private final Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);
+        ZoomControlView(){
+            super(MainActivity.this);
+            setClickable(true);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        }
+        private float stopCenter(int index){
+            int count=Math.max(1,zoomStops.length);
+            float margin=dp(18);
+            return margin+(getWidth()-2*margin)*(index+.5f)/count;
+        }
+        private int stopAt(float x){
+            int best=0;
+            float distance=Float.MAX_VALUE;
+            for(int i=0;i<zoomStops.length;i++){
+                float d=Math.abs(x-stopCenter(i));
+                if(d<distance){distance=d;best=i;}
+            }
+            return best;
+        }
+        @Override protected void onDraw(Canvas c){
+            super.onDraw(c);
+            if(zoomStops.length==0)return;
+            float midY=getHeight()/2f;
+            int chosen=0;
+            float best=Float.MAX_VALUE;
+            for(int i=0;i<zoomStops.length;i++){
+                float distance=Math.abs((float)Math.log(
+                    Math.max(.01f,cameraZoom)/Math.max(.01f,zoomStops[i])));
+                if(distance<best){chosen=i;best=distance;}
+            }
+            for(int i=0;i<zoomStops.length;i++){
+                float x=stopCenter(i);
+                boolean selected=i==chosen;
+                if(selected){
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(0xE8DDBF98);
+                    c.drawCircle(x,midY,dp(23),p);
+                }
+                p.setTypeface(Typeface.create("sans-serif-medium",
+                    selected?Typeface.BOLD:Typeface.NORMAL));
+                p.setTextSize(dp(selected?14:12));
+                p.setTextAlign(Paint.Align.CENTER);
+                p.setColor(selected?INK:WHITE);
+                Paint.FontMetrics fm=p.getFontMetrics();
+                float baseline=midY-(fm.ascent+fm.descent)/2;
+                c.drawText(selected?zoomLabel(cameraZoom):zoomLabel(zoomStops[i]),
+                    x,baseline,p);
+            }
+        }
+        @Override public boolean onTouchEvent(MotionEvent event){
+            if(boundCamera==null)return false;
+            switch(event.getActionMasked()){
+                case MotionEvent.ACTION_DOWN:
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    cancelZoomAnimation();
+                    zoomGestureActive=false;zoomHoldActive=false;zoomTouchMoved=false;
+                    zoomTouchBeginX=event.getRawX();
+                    zoomTouchBeginY=event.getRawY();
+                    zoomHoldBaseRatio=cameraZoom;
+                    if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                    zoomHoldTask=()->beginZoomScrub(this);
+                    handler.postDelayed(zoomHoldTask,290L);
+                    return true;
+                case MotionEvent.ACTION_MOVE:{
+                    float dx=event.getRawX()-zoomTouchBeginX;
+                    float dy=event.getRawY()-zoomTouchBeginY;
+                    // This is the key iPhone-like behavior: a swipe from the
+                    // zoom control opens continuous scrub IMMEDIATELY.
+                    if(!zoomHoldActive && ZoomMath.isHorizontalDrag(
+                        dx,dy,dp(7))){
+                        beginZoomScrub(this);
+                    }else if(!zoomHoldActive && Math.abs(dy)>dp(18)){
+                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                        zoomTouchMoved=true;
+                    }
+                    if(zoomHoldActive) {
+                        setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(155),
+                            zoomMin,zoomMax));
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                    if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                    if(zoomHoldActive){
+                        float dx=event.getRawX()-zoomTouchBeginX;
+                        setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(155),
+                            zoomMin,zoomMax));
+                        finishZoomScrub();
+                    }else if(!zoomTouchMoved && zoomStops.length>0){
+                        int index=stopAt(event.getX());
+                        animateZoomTo(zoomStops[index]);
+                        performClick();
+                    }
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                    if(zoomHoldActive)finishZoomScrub();
+                    zoomTouchMoved=false;
+                    return true;
+                default:return true;
+            }
+        }
+        @Override public boolean performClick(){super.performClick();return true;}
+    }
+
+    /** Present as an overlay ABOVE the strip, never shifting the finger target. */
     private void revealZoomDial(){
-        if(zoomDial==null)return;
+        if(zoomDial==null||rootView==null||zoomRow==null)return;
         if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
-        zoomDial.setVisibility(View.VISIBLE);
+        if(zoomRow.getHeight()>0){
+            int[] rootXY=new int[2],rowXY=new int[2];
+            rootView.getLocationInWindow(rootXY);
+            zoomRow.getLocationInWindow(rowXY);
+            FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)zoomDial.getLayoutParams();
+            int top=rowXY[1]-rootXY[1]-rootView.getPaddingTop()-dp(151);
+            lp.topMargin=Math.max(dp(76),top);
+            zoomDial.setLayoutParams(lp);
+        }
+        if(presetControls!=null)presetControls.setAlpha(.18f);
+        if(zoomDial.getVisibility()!=View.VISIBLE){
+            zoomDial.setVisibility(View.VISIBLE);
+            zoomDial.setAlpha(0f);
+            zoomDial.animate().alpha(1f).setDuration(115L).start();
+        }
         zoomDial.invalidate();
     }
     private void scheduleHideZoomDial(){
         if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
         zoomHideTask=()->{
-            if(zoomDial!=null && !zoomHoldActive)
-                zoomDial.setVisibility(View.GONE);
+            if(zoomGestureActive || zoomHoldActive)return;
+            if(zoomDial!=null && zoomDial.getVisibility()==View.VISIBLE){
+                zoomDial.animate().alpha(0f).setDuration(170L).withEndAction(()->{
+                    if(!zoomGestureActive && !zoomHoldActive){
+                        zoomDial.setVisibility(View.GONE);
+                        if(presetControls!=null)presetControls.setAlpha(1f);
+                    }
+                }).start();
+            } else if(presetControls!=null)presetControls.setAlpha(1f);
         };
-        handler.postDelayed(zoomHideTask,2800L);
+        handler.postDelayed(zoomHideTask,2100L);
     }
 
-    /** Centered graduated iPhone-style zoom scrubber with logarithmic mapping. */
-    private final class ZoomDialView extends View{
-        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-        ZoomDialView(){super(MainActivity.this);setLayerType(View.LAYER_TYPE_SOFTWARE,null);}
+    /**
+     * Semicircular arc / scrolling graduated wheel. Central gold pointer is
+     * fixed while tick labels move with live zoom, like the iPhone camera's
+     * finger-driven precision dial. This view also accepts horizontal drags.
+     */
+    private final class ZoomDialView extends View {
+        private final Paint p=new Paint(Paint.ANTI_ALIAS_FLAG);
+        ZoomDialView(){
+            super(MainActivity.this);
+            setClickable(true);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        }
+        private float arcY(float x,float width){
+            float distance=(x-width/2f)/(Math.max(dp(1),width/2f));
+            return dp(65)+dp(37)*distance*distance;
+        }
         @Override protected void onDraw(Canvas c){
             super.onDraw(c);
-            float w=getWidth(),h=getHeight(),x0=dp(24),x1=w-dp(24);
-            if(w<=dp(80))return;
-            float y=h*.64f;
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(dp(1.1f));paint.setColor(0x9ACCC5B9);
-            c.drawLine(x0,y,x1,y,paint);
-            for(int i=0;i<=40;i++){
-                float x=x0+(x1-x0)*i/40f;
-                float height=dp(i%5==0?10:5);
-                paint.setStrokeWidth(dp(i%5==0?1.8f:1f));
-                paint.setColor(i%5==0?0xFFF0EAE1:0x8FADA7A0);
-                c.drawLine(x,y-height*.5f,x,y+height*.5f,paint);
+            final float w=getWidth(),h=getHeight(),center=w/2f;
+            if(w<dp(85))return;
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xE00B0F12);
+            c.drawRoundRect(dp(5),dp(3),w-dp(5),h-dp(5),dp(26),dp(26),p);
+            p.setTextAlign(Paint.Align.CENTER);
+            p.setTypeface(Typeface.create("sans-serif-medium",Typeface.BOLD));
+            p.setTextSize(dp(19));
+            p.setColor(GOLD);
+            c.drawText(zoomLabel(cameraZoom),center,dp(33),p);
+
+            double octave=Math.log(Math.max(.01f,cameraZoom))/Math.log(2d);
+            double minOctave=Math.log(Math.max(.01f,zoomMin))/Math.log(2d);
+            double maxOctave=Math.log(Math.max(.01f,zoomMax))/Math.log(2d);
+            float pxPerOctave=dp(155);
+            int first=(int)Math.floor(Math.max(minOctave,octave-1.7)*24);
+            int last=(int)Math.ceil(Math.min(maxOctave,octave+1.7)*24);
+            for(int tick=first;tick<=last;tick++){
+                double v=tick/24d;
+                float x=(float)(center+(v-octave)*pxPerOctave);
+                if(x<dp(16)||x>w-dp(16))continue;
+                float y=arcY(x,w);
+                boolean major=tick%6==0;
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(dp(major?1.9f:1f));
+                p.setColor(major?0xDEDAD4C7:0x80B6AFA4);
+                c.drawLine(x,y-dp(major?14:7),x,y,p);
             }
-            float pos=x0+(x1-x0)*ZoomMath.position(cameraZoom,zoomMin,zoomMax);
-            paint.setColor(GOLD);paint.setStrokeWidth(dp(3));
-            c.drawLine(pos,y-dp(14),pos,y+dp(14),paint);
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(WHITE);
-            paint.setTextSize(dp(15));paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-            paint.setTextAlign(Paint.Align.CENTER);
-            c.drawText(zoomLabel(cameraZoom),pos,dp(18),paint);
-            paint.setTextSize(dp(10));paint.setColor(0xFFACA59A);
-            paint.setTextAlign(Paint.Align.LEFT);
-            c.drawText(zoomLabel(zoomMin),x0,dp(18),paint);
-            paint.setTextAlign(Paint.Align.RIGHT);
-            c.drawText(zoomLabel(zoomMax),x1,dp(18),paint);
+            for(float stop:zoomStops){
+                double v=Math.log(Math.max(.01f,stop))/Math.log(2d);
+                float x=(float)(center+(v-octave)*pxPerOctave);
+                if(x<dp(29)||x>w-dp(29))continue;
+                p.setStyle(Paint.Style.FILL);
+                p.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                p.setTextSize(dp(10));
+                p.setColor(0xE4D8D0C2);
+                c.drawText(zoomLabel(stop),x,arcY(x,w)+dp(18),p);
+            }
+            // Central fixed index, separate from moving 1/24-octave ticks.
+            p.setStyle(Paint.Style.STROKE);
+            p.setColor(GOLD);
+            p.setStrokeWidth(dp(3f));
+            c.drawLine(center,arcY(center,w)-dp(21),center,arcY(center,w)+dp(3),p);
+            p.setStyle(Paint.Style.FILL);
+            p.setTextSize(dp(10));
+            p.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+            p.setColor(0xBFD9D4CC);
+            c.drawText("좌우로 밀어서 확대 · 축소",center,h-dp(10),p);
         }
         @Override public boolean onTouchEvent(MotionEvent event){
             if(boundCamera==null)return false;
-            int action=event.getActionMasked();
-            if(action==MotionEvent.ACTION_DOWN || action==MotionEvent.ACTION_MOVE){
-                if(action==MotionEvent.ACTION_DOWN){
-                    cancelZoomAnimation();revealZoomDial();
-                }
-                float margin=dp(24),range=Math.max(1f,getWidth()-margin*2f);
-                float position=Math.max(0f,Math.min(1f,(event.getX()-margin)/range));
-                setZoomDirect(ZoomMath.ratio(position,zoomMin,zoomMax));
-                return true;
+            switch(event.getActionMasked()){
+                case MotionEvent.ACTION_DOWN:
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    cancelZoomAnimation();
+                    zoomGestureActive=true;zoomHoldActive=true;
+                    zoomWheelStartX=event.getRawX();
+                    zoomWheelStartRatio=cameraZoom;
+                    revealZoomDial();
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    setZoomDirect(ZoomMath.drag(zoomWheelStartRatio,
+                        event.getRawX()-zoomWheelStartX,dp(155),zoomMin,zoomMax));
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    setZoomDirect(ZoomMath.drag(zoomWheelStartRatio,
+                        event.getRawX()-zoomWheelStartX,dp(155),zoomMin,zoomMax));
+                    performClick();
+                    finishZoomScrub();
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    finishZoomScrub();return true;
+                default:return true;
             }
-            if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL){
-                if(action==MotionEvent.ACTION_UP)performClick();
-                scheduleHideZoomDial();return true;
-            }
-            return true;
         }
         @Override public boolean performClick(){super.performClick();return true;}
     }
@@ -2162,6 +2382,7 @@ public final class MainActivity extends ComponentActivity {
             videoCapabilitiesFallbackNotified=false;
             lastExposureIndex = Integer.MIN_VALUE;
             cameraZoom=1f;
+            zoomPendingRatio=1f;
             zoomMin=1f;zoomMax=6f;
             isFront = !isFront;
             bindCameraUseCases();
@@ -2247,6 +2468,7 @@ public final class MainActivity extends ComponentActivity {
         if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
         if (zoomHideTask != null) handler.removeCallbacks(zoomHideTask);
         if (zoomHoldTask != null) handler.removeCallbacks(zoomHoldTask);
+        if (zoomPendingDispatch != null) handler.removeCallbacks(zoomPendingDispatch);
         cancelZoomAnimation();
         detachZoomState();
         if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
