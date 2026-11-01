@@ -39,6 +39,8 @@ import androidx.camera.camera2.interop.Camera2CameraInfo;
 import androidx.camera.camera2.interop.CaptureRequestOptions;
 import androidx.camera.core.CameraEffect;
 import androidx.camera.core.Camera;
+import androidx.camera.core.CameraInfo;
+import androidx.camera.core.DynamicRange;
 import androidx.camera.core.Preview;
 import androidx.camera.core.UseCaseGroup;
 import androidx.camera.core.ViewPort;
@@ -54,6 +56,7 @@ import androidx.camera.video.FallbackStrategy;
 import androidx.camera.video.PendingRecording;
 import androidx.camera.video.Recorder;
 import androidx.camera.video.VideoCapture;
+import androidx.camera.video.VideoCapabilities;
 import androidx.camera.video.MediaStoreOutputOptions;
 import androidx.camera.video.Quality;
 import androidx.camera.video.QualitySelector;
@@ -158,6 +161,14 @@ public final class MainActivity extends ComponentActivity {
     private Recording recording;
     private Uri lastMedia;
     private boolean isVideo = false;
+    private String videoQualitySetting = "FHD";
+    private int videoFpsSetting = 30;
+    private boolean stabilizationRequested = true;
+    private String effectiveVideoQuality = "FHD";
+    private int effectiveVideoFps = 30;
+    private boolean effectiveStabilization = false;
+    private boolean videoCompatibilityFallback = false;
+    private boolean video60Supported = false;
     private boolean proMode = false;
     private TextView modePro, proTelemetry;
     private ColorLooks.Scene scenePreference = ColorLooks.Scene.AUTO;
@@ -193,6 +204,11 @@ public final class MainActivity extends ComponentActivity {
         // the actual status/navigation/cutout safe area.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
+        videoQualitySetting=getPreferences(MODE_PRIVATE).getString("video_quality","FHD");
+        if(!videoQualitySetting.equals("UHD")&&!videoQualitySetting.equals("FHD")&&
+           !videoQualitySetting.equals("HD"))videoQualitySetting="FHD";
+        videoFpsSetting=getPreferences(MODE_PRIVATE).getInt("video_fps",30)==60?60:30;
+        stabilizationRequested=getPreferences(MODE_PRIVATE).getBoolean("video_stabilization",true);
         try{
             scenePreference=ColorLooks.Scene.valueOf(
                 getPreferences(MODE_PRIVATE).getString("scene_mode","AUTO"));
@@ -811,6 +827,29 @@ public final class MainActivity extends ComponentActivity {
         panel.addView(flickerChoice,flickerLp);
         flickerChoice.setOnClickListener(v->showFlickerSettings(flickerChoice));
 
+        TextView qualityRow = label("영상 화질 · "+videoQualitySetting+" / "+
+            videoFpsSetting+"fps",14,WHITE,Typeface.BOLD);
+        qualityRow.setPadding(dp(16),0,dp(16),0);
+        qualityRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams qlp=new LinearLayout.LayoutParams(-1,dp(48));
+        qlp.topMargin=dp(8);
+        panel.addView(qualityRow,qlp);
+        qualityRow.setOnClickListener(v->{dialog.dismiss();showVideoSettings();});
+        TextView stabRow=label("영상 흔들림 보정 · "+
+            (stabilizationRequested?"요청":"끄기"),14,WHITE,Typeface.BOLD);
+        stabRow.setPadding(dp(16),0,dp(16),0);
+        stabRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams slp=new LinearLayout.LayoutParams(-1,dp(48));
+        slp.topMargin=dp(8);
+        panel.addView(stabRow,slp);
+        stabRow.setOnClickListener(v->{
+            if(recording!=null){showMessage("녹화 중에는 변경할 수 없습니다.");return;}
+            stabilizationRequested=!stabilizationRequested;
+            getPreferences(MODE_PRIVATE).edit().putBoolean("video_stabilization",stabilizationRequested).apply();
+            stabRow.setText("영상 흔들림 보정 · "+(stabilizationRequested?"요청":"끄기"));
+            if(cameraProvider!=null)bindCameraUseCases();
+        });
+
         TextView filterTitle = label("필터 강도", 14, WHITE, Typeface.BOLD);
         LinearLayout.LayoutParams ftp = new LinearLayout.LayoutParams(-1, dp(35));
         ftp.topMargin = dp(14);
@@ -1023,10 +1062,39 @@ public final class MainActivity extends ComponentActivity {
         String currentLabel = selected == ColorLooks.Look.CANON50
             ? "CANON R5 II · 50mm LOOK"
             : selected.label.toUpperCase(Locale.US);
+        String qualityInfo=isVideo?(" · "+effectiveVideoQuality+" "+
+            effectiveVideoFps+"fps"+(effectiveStabilization?" · STAB":"")):"";
         info.setText(currentLabel + " · " + frameRatio +
             (filterFallback?" · 필터 중단":"") +
-            " · " + (proMode?"PRO":isVideo?"VIDEO":"PHOTO"));
+            " · " + (proMode?"PRO":isVideo?"VIDEO":"PHOTO")+qualityInfo);
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
+    }
+
+    private void showVideoSettings() {
+        if(recording!=null){showMessage("녹화 중에는 변경할 수 없습니다.");return;}
+        final String[] choices={"4K UHD","1080p FHD","720p HD"};
+        final String[] levels={"UHD","FHD","HD"};
+        int selectedIndex=videoQualitySetting.equals("UHD")?0:videoQualitySetting.equals("HD")?2:1;
+        new android.app.AlertDialog.Builder(this).setTitle("영상 해상도")
+            .setSingleChoiceItems(choices,selectedIndex,(d,index)->{
+                d.dismiss();
+                videoQualitySetting=levels[index];
+                getPreferences(MODE_PRIVATE).edit().putString("video_quality",videoQualitySetting).apply();
+                showVideoFpsPicker();
+            }).setNegativeButton("취소",null).show();
+    }
+
+    private void showVideoFpsPicker() {
+        if(recording!=null)return;
+        final String[] choices={"30fps · 저조도 우선","60fps · 움직임 우선 (기기별 지원)"};
+        new android.app.AlertDialog.Builder(this).setTitle("영상 프레임 속도")
+            .setSingleChoiceItems(choices,videoFpsSetting==60?1:0,(d,index)->{
+                d.dismiss();
+                videoFpsSetting=index==1?60:30;
+                getPreferences(MODE_PRIVATE).edit().putInt("video_fps",videoFpsSetting).apply();
+                videoCompatibilityFallback=false;
+                if(cameraProvider!=null)bindCameraUseCases();
+            }).setNegativeButton("취소",null).show();
     }
 
     private void showScenePicker() {
