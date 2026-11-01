@@ -1,5 +1,38 @@
 # I photo — 갤럭시 전용 시네마틱 카메라
 
+## v2.1.0 — 통합 카메라 업데이트 (v1.9 UI / v2.0 색감 / v2.1 촬영)
+
+### v1.9 UI·UX
+- 촬영 하단 `사진 / 동영상 / 프로` 모드. 프로 모드는 ISO·셔터 측정 표시와 AE/AF 잠금 진입을 제공합니다.
+- 사진·동영상의 주요 터치 영역을 44~48dp 수준으로 확대하고, 상단 정보 표시가 화면을 넘지 않도록 개선했습니다.
+- 화면 비율, 안티플리커, 장면별 색감, 4K·fps·손떨림, Bokeh 설정은 외곽 설정창에 분리합니다.
+
+### v2.0 장면별 색감 엔진
+- 17³ LUT를 **33³ LUT**로 업그레이드. 기본 필터 5개(Luxury/Soft/Noir/Canon/원본) 유지.
+- 장면 선택: `자동(카메라 노출값 기반 밝은 장면·야경 추정)`, `밝은 장면`, `야경`, `인물`.
+- 인물 장면에서는 RGB 조건 기반의 은은한 피부톤 따뜻함을 보정합니다. **얼굴 검출/피부 분할 AI가 아니며**, 색상 프로파일의 픽셀 단위 일치를 보장하지 않습니다.
+- 동영상 녹화/AE·AF 잠금 중 자동 LUT가 변하지 않도록 제한해 장면 전환 시 색조 튐을 줄입니다.
+- `SceneToneTest`로 값 범위, 무채색 유지, 단조 증가를 자동 점검합니다.
+
+### v2.1 동영상·인물 촬영
+- `4K UHD / 1080p FHD / 720p HD`, `30 / 60fps 요청`을 촬영 설정에 추가했습니다.
+- CameraX Recorder의 VideoCapabilities, Camera2 fps 범위로 현재 카메라의 지원 여부를 조회하여 지원하지 않는 설정은 자동 하향합니다.
+- 60fps는 CameraX 영상 프레임 요청값이며 **최종 fps를 강제 보장하는 기능이 아닙니다**. 저장된 실제 영상 파일의 해상도와 평균 fps(메타데이터가 있는 경우)를 확인합니다.
+- 흔들림 보정은 지원 카메라에서만 켜고, Android가 효과를 보장하는 최대 FHD·30fps 범위에서 활성화합니다. UHD/60fps에서 임의로 안정화됐다고 표시하지 않습니다.
+- 기기의 OEM CameraX Extension `BOKEH`가 있는 경우에 한해 사진 인물 배경 흐림을 제공합니다. 사진 Bokeh 모드는 일반 촬영 LUT와 결합하지 않으며 동영상 Bokeh는 구현하지 않았습니다.
+- 고급 조합에 실패하면 1080p·30fps 등 안전한 설정으로 복구하도록 개선했습니다. `VideoProfileTest`로 지원 능력별 하향 및 안정화 결정을 검사합니다.
+
+### 기존 안정성·보안
+- Camera2 기반 수동 ISO·셔터 고정 시 실제 센서 결과 검증, 플리커 설정(자동·50/60Hz), 기존 권한 최소화, GPU 오류 복구 유지.
+- 인터넷, 연락처, 문자 접근 권한 없음. GitHub Actions에서 Release 서명·권한 검사 및 단위 테스트 진행.
+- **미해결: GitHub Secrets에 고정 서명키가 등록되어 있지 않아 일회용 Release 키로 빌드됨.** 따라서 기존 APK 덮어 설치는 실패할 수 있습니다.
+- **미해결: 삼성 보안 경고의 오탐 판정 및 실기기 실행 여부는 미확인.** 보호 기능을 비활성화하지 마세요.
+- **기기별 실촬영 테스트 필요:** 사진/영상 크롭, 4K/60fps, 흔들림 보정, Bokeh, 10분 녹화, AE/AF 고정의 실제 동작은 APK 빌드만으로 검증되지 않습니다.
+
+### 다운로드
+- [I photo v2.1.0 Release APK](https://raw.githubusercontent.com/useToolkit/lol/i-photo-apk/I-photo-v2.1.0-release.apk)
+- [GitHub Actions 검증 결과](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo)
+
 ## v1.8.0 — 실사용 안정화
 - 자동노출에는 Camera2 CONTROL_AE_ANTIBANDING_MODE 설정(자동·50Hz·60Hz·끄기)을 적용합니다.
 - 수동 ISO/셔터 잠금에는 셔터를 100/120Hz 조명 주기의 배수에 가깝게 조정하고 ISO를 보정합니다(가능한 노출 길이에서만).
@@ -44,7 +77,7 @@
 - 외부 서버, 광고 SDK 및 수집/분석 SDK 없음 (현재 앱 소스/매니페스트 기준).
 - Release 서명키: GitHub Actions Secrets 네 가지가 설정되어 있을 경우 사용자 키를 사용.
   Secrets가 없으면 Actions 실행 중 임시 키로 서명되며, 이는 **이후 버전 덮어쓰기를 보장하지 않습니다**. 임시 키는 업로드하지 않습니다.
-- 새 버전 APK: [I photo v1.5.0 Release 직접 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.8.0-release.apk)
+- 새 버전 APK: [I photo v1.5.0 Release 직접 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v2.1.0-release.apk)
 - **삼성 피싱앱 위험 경고를 회피/해제하거나 보안 심사를 우회하지 않습니다.** 삼성은 공식 스토어 외 설치, 설치 맥락, 권한 등의 신호를 사용할 수 있어 경고는 재발할 수 있습니다. 삼성멤버스 오탐 검토 또는 공식 스토어 배포가 필요할 수 있습니다.
 
 ### 개인 서명키를 고정해 업데이트 설치하려면
@@ -65,7 +98,7 @@ GitHub 저장소 Settings > Secrets and variables > Actions의 Repository secret
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.8.0-release.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v2.1.0-release.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
