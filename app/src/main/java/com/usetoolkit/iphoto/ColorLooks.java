@@ -23,10 +23,19 @@ public final class ColorLooks {
         Look(String label, String hint) { this.label = label; this.hint = hint; }
     }
 
+    public enum Scene {
+        AUTO("자동 · 노출 기반"), DAYLIGHT("밝은 장면"),
+        NIGHT("야경"), PORTRAIT("인물");
+        public final String label;
+        Scene(String label){this.label=label;}
+    }
     private ColorLooks() {}
 
     public static SingleColorLut generate(Look look, float strength) {
-        final int n = 17;
+        return generate(look,strength,Scene.DAYLIGHT);
+    }
+    public static SingleColorLut generate(Look look, float strength, Scene scene) {
+        final int n = 33;
         final float t = clip(strength, 0f, 1f);
         int[][][] cube = new int[n][n][n];
         for (int ri = 0; ri < n; ri++) {
@@ -36,6 +45,11 @@ public final class ColorLooks {
                     float g = (float) gi / (n - 1);
                     float b = (float) bi / (n - 1);
                     float[] graded = grade(look, r, g, b);
+                    if (look != Look.ORIGINAL) {
+                        int sceneCode=scene==Scene.NIGHT?SceneTone.NIGHT:
+                            scene==Scene.PORTRAIT?SceneTone.PORTRAIT:SceneTone.DAY;
+                        graded=SceneTone.apply(sceneCode,graded[0],graded[1],graded[2]);
+                    }
                     float ro = mix(r, graded[0], t);
                     float go = mix(g, graded[1], t);
                     float bo = mix(b, graded[2], t);
