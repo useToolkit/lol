@@ -370,6 +370,9 @@ public final class MainActivity extends ComponentActivity {
             lastSensorISO = 0;
             lastLensFocusDistance = -1f;
             lastResultAeMode = -1;
+            actualEisMode=CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF;
+            actualOisMode=CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF;
+            lastStabUiMillis=0L;
             if (portraitBokehRequested && !isFront && !isVideo && extensionsManager!=null) {
                 try {
                     if(extensionsManager.isExtensionAvailable(
@@ -422,15 +425,22 @@ public final class MainActivity extends ComponentActivity {
                 previewStabCapable=android.os.Build.VERSION.SDK_INT>=33 &&
                     Preview.getPreviewCapabilities(selectedInfo).isStabilizationSupported();
             }catch(Exception e){Log.w(TAG,"Cannot inspect preview stabilization",e);}
+            // Plan EIS before Preview is built: Preview ON + VideoCapture OFF
+            // disables BOTH streams. Never enable preview EIS without matching video EIS.
+            VideoCapabilities earlyVideoCaps=Recorder.getVideoCapabilities(selectedInfo);
+            String predictedQuality=VideoProfile.chooseQuality(
+                videoCompatibilityFallback?"FHD":videoQualitySetting,
+                earlyVideoCaps.isQualitySupported(Quality.UHD,DynamicRange.SDR),
+                earlyVideoCaps.isQualitySupported(Quality.FHD,DynamicRange.SDR),
+                earlyVideoCaps.isQualitySupported(Quality.HD,DynamicRange.SDR));
+            int predictedFps=videoCompatibilityFallback?30:videoFpsSetting;
+            StabilizationPlan stabPlan=StabilizationPlan.select(stabilizationMode,
+                !photoOnlyFallback && earlyVideoCaps.isStabilizationSupported(),
+                previewStabCapable,opticalStabilizationAvailable,
+                predictedQuality,predictedFps);
             Preview.Builder pb = new Preview.Builder();
-            previewStabilizationRequested=false;
-            if(stabilizationMode==2 && !photoOnlyFallback &&
-               !videoCompatibilityFallback &&
-               videoFpsSetting==30 && !videoQualitySetting.equals("UHD") &&
-               previewStabCapable){
-                pb.setPreviewStabilizationEnabled(true);
-                previewStabilizationRequested=true;
-            }
+            previewStabilizationRequested=stabPlan.previewEis;
+            if(stabPlan.previewEis)pb.setPreviewStabilizationEnabled(true);
             new Camera2Interop.Extender<>(pb).setSessionCaptureCallback(
                 new CameraCaptureSession.CaptureCallback() {
                     @Override
@@ -1673,8 +1683,13 @@ public final class MainActivity extends ComponentActivity {
                     baselineShutterNs,baselineISO,supportedISO.getLower(),supportedISO.getUpper(),
                     supportedShutterNs.getLower(),Math.min(33_333_333L,supportedShutterNs.getUpper()),
                     effectiveHz);
-                requestedISO=quantized.iso;
-                requestedShutterNs=quantized.shutterNs;
+                long fpsMaxShutter=(isVideo&&effectiveVideoFps>=60)?
+                    16_666_666L:33_333_333L;
+                requestedShutterNs=Math.min(quantized.shutterNs,fpsMaxShutter);
+                requestedISO=(int)Math.max(supportedISO.getLower(),Math.min(
+                    supportedISO.getUpper(),
+                    Math.round((double)quantized.iso*quantized.shutterNs/
+                        Math.max(1L,requestedShutterNs))));
                 if(quantized.shortExposure && effectiveHz!=0)
                     showMessage("빠른 셔터에서는 LED 깜빡임이 남을 수 있습니다.");
                 manualFocusRequested=canManuallySetFocus();
@@ -1916,7 +1931,8 @@ public final class MainActivity extends ComponentActivity {
         int iso=(int)Math.round(exposureProduct/shutter);
         iso=Math.max(supportedISO.getLower(),Math.min(supportedISO.getUpper(),iso));
         shutter=Math.round(exposureProduct/Math.max(1,iso));
-        long maxVideoShutter=Math.min(supportedShutterNs.getUpper(),33000000L);
+        long maxVideoShutter=Math.min(supportedShutterNs.getUpper(),
+            isVideo && effectiveVideoFps>=60?16_666_666L:33_333_333L);
         shutter=Math.max(supportedShutterNs.getLower(),Math.min(maxVideoShutter,shutter));
         // Recompute ISO in case shutter had to be clamped.
         iso=(int)Math.round(exposureProduct/Math.max(1,shutter));
