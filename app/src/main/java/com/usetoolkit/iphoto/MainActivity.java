@@ -5,6 +5,7 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
+import android.animation.ValueAnimator;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.hardware.camera2.CameraCharacteristics;
@@ -23,8 +24,10 @@ import android.provider.MediaStore;
 import android.util.Log;
 import android.util.Range;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -41,6 +44,7 @@ import androidx.camera.camera2.interop.CaptureRequestOptions;
 import androidx.camera.core.CameraEffect;
 import androidx.camera.core.Camera;
 import androidx.camera.core.CameraInfo;
+import androidx.camera.core.ZoomState;
 import androidx.camera.core.DynamicRange;
 import androidx.camera.core.Preview;
 import androidx.camera.core.UseCaseGroup;
@@ -74,6 +78,8 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.lifecycle.LiveData;
+import androidx.lifecycle.Observer;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -147,6 +153,18 @@ public final class MainActivity extends ComponentActivity {
     private volatile boolean focusLocked = false;
     private boolean touchMoved = false, touchedLong = false, pinchActive = false;
     private float focusX = -1f, focusY = -1f, touchX, touchY, lastPinchDistance, cameraZoom = 1f;
+    private float zoomMin=1f,zoomMax=6f;
+    private LinearLayout zoomRow;
+    private ZoomDialView zoomDial;
+    private TextView[] zoomButtons=new TextView[0];
+    private float[] zoomStops=new float[0];
+    private LiveData<ZoomState> zoomStateLiveData;
+    private Observer<ZoomState> zoomStateObserver;
+    private ValueAnimator zoomAnimator;
+    private Runnable zoomHideTask, zoomHoldTask;
+    private boolean zoomHoldActive=false, zoomTouchMoved=false;
+    private float zoomTouchBeginX, zoomHoldBaseRatio;
+    private long lastZoomSentAt=0L;
     private Runnable pendingFocusLock;
     private ExposureSunGuide exposureSunGuide;
     private boolean aeLocked = false;
@@ -344,6 +362,8 @@ public final class MainActivity extends ComponentActivity {
             mismatchFrames = 0;
             boundCamera = null;
             portraitBokehActive=false;
+            cancelZoomAnimation();
+            detachZoomState();
             cameraProvider.unbindAll();
             lastCaptureTimeMs = 0;
             lastSensorExposureNs = 0;
@@ -365,6 +385,7 @@ public final class MainActivity extends ComponentActivity {
                         boundCamera=cameraProvider.bindToLifecycle(this,
                             bokehSelector,bokehPreview,bokehPhoto);
                         previewUseCase=bokehPreview;imageCapture=bokehPhoto;
+                        attachZoomState();
                         videoRecorder=null;videoCapture=null;
                         portraitBokehActive=true;
                         setInfo();
@@ -504,6 +525,7 @@ public final class MainActivity extends ComponentActivity {
             boundCamera = cameraProvider.bindToLifecycle(this,
                 isFront ? CameraSelector.DEFAULT_FRONT_CAMERA : CameraSelector.DEFAULT_BACK_CAMERA,
                 group.build());
+            attachZoomState();
             if (boundCamera != null && flash && isVideo)
                 boundCamera.getCameraControl().enableTorch(true);
             manualSensorAvailable = readManualSensorCapabilities();
@@ -809,22 +831,17 @@ public final class MainActivity extends ComponentActivity {
             chip.setOnClickListener(v -> selectLook(look));
         }
 
-        LinearLayout zoomRow = new LinearLayout(this);
+        // iPhone-like zoom interactions: tap focal presets, hold and slide,
+        // or pinch anywhere on the camera preview. The list is rebuilt from
+        // the camera's actual ZoomState range; unsupported 0.5x is not faked.
+        zoomDial=new ZoomDialView();
+        zoomDial.setVisibility(View.GONE);
+        zoomDial.setContentDescription("연속 줌 다이얼. 좌우로 드래그하여 확대·축소");
+        bottom.addView(zoomDial,new LinearLayout.LayoutParams(-1,dp(68)));
+        zoomRow=new LinearLayout(this);
         zoomRow.setGravity(Gravity.CENTER);
-        bottom.addView(zoomRow, new LinearLayout.LayoutParams(-1, dp(46)));
-        TextView zoom1 = label("1×", 16, GOLD, Typeface.BOLD);
-        zoom1.setGravity(Gravity.CENTER);
-        zoom1.setBackground(shape(0xD12C3136, dp(30), 0, 0));
-        zoom1.setContentDescription("1배 줌");
-        zoomRow.addView(zoom1, new LinearLayout.LayoutParams(dp(55), dp(44)));
-        zoom1.setOnClickListener(v -> setZoom(1f));
-        TextView zoom2 = label("2×", 15, WHITE, Typeface.BOLD);
-        zoom2.setGravity(Gravity.CENTER);
-        zoom2.setContentDescription("2배 줌");
-        LinearLayout.LayoutParams z2p = new LinearLayout.LayoutParams(dp(55), dp(44));
-        z2p.leftMargin = dp(4);
-        zoomRow.addView(zoom2, z2p);
-        zoom2.setOnClickListener(v -> setZoom(2f));
+        bottom.addView(zoomRow,new LinearLayout.LayoutParams(-1,dp(50)));
+        rebuildZoomButtons();
 
         LinearLayout shutterRow = new LinearLayout(this);
         shutterRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -1489,6 +1506,8 @@ public final class MainActivity extends ComponentActivity {
                     draggingSun=false;
                     pinchActive=true;
                     lastPinchDistance=fingerDistance(e);
+                    cancelZoomAnimation();
+                    revealZoomDial();
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if(draggingSun && e.getPointerCount()==1){
@@ -1502,8 +1521,8 @@ public final class MainActivity extends ComponentActivity {
                     if(e.getPointerCount()>=2){
                         float d=fingerDistance(e);
                         if(lastPinchDistance>10f && d>10f){
-                            float desired=Math.max(1f,Math.min(6f,cameraZoom*d/lastPinchDistance));
-                            setZoom(desired);
+                            float desired=ZoomMath.limit(cameraZoom*d/lastPinchDistance,zoomMin,zoomMax);
+                            setZoomDirect(desired);
                         }
                         lastPinchDistance=d;
                     }else if(Math.abs(touchX-e.getX())>dp(13)||
@@ -1514,6 +1533,7 @@ public final class MainActivity extends ComponentActivity {
                     return true;
                 case MotionEvent.ACTION_POINTER_UP:
                     if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
+                    scheduleHideZoomDial();
                     return true;
                 case MotionEvent.ACTION_UP:
                     if(pendingFocusLock!=null)handler.removeCallbacks(pendingFocusLock);
@@ -1921,13 +1941,199 @@ public final class MainActivity extends ComponentActivity {
         }catch(Exception e){Log.e(TAG,"Manual exposure adjust failed",e);}
     }
 
-    private void setZoom(float ratio) {
-        if (boundCamera == null) return;
-        try {
-            boundCamera.getCameraControl().setZoomRatio(ratio);
-            cameraZoom = ratio;
+    private void attachZoomState(){
+        detachZoomState();
+        if(boundCamera==null)return;
+        zoomStateLiveData=boundCamera.getCameraInfo().getZoomState();
+        zoomStateObserver=(state)->{
+            if(state==null || destroyed)return;
+            float lower=Math.max(.1f,state.getMinZoomRatio());
+            float upper=Math.max(lower,state.getMaxZoomRatio());
+            boolean rangeChanged=Math.abs(zoomMin-lower)>.015f ||
+                Math.abs(zoomMax-upper)>.015f;
+            zoomMin=lower;zoomMax=upper;
+            cameraZoom=ZoomMath.limit(state.getZoomRatio(),zoomMin,zoomMax);
+            if(rangeChanged)rebuildZoomButtons();
+            updateZoomVisuals();
+        };
+        zoomStateLiveData.observe(this,zoomStateObserver);
+        ZoomState current=zoomStateLiveData.getValue();
+        if(current!=null)zoomStateObserver.onChanged(current);
+    }
+    private void detachZoomState(){
+        if(zoomStateLiveData!=null && zoomStateObserver!=null)
+            zoomStateLiveData.removeObserver(zoomStateObserver);
+        zoomStateLiveData=null;zoomStateObserver=null;
+    }
+    private void rebuildZoomButtons(){
+        if(zoomRow==null)return;
+        zoomRow.removeAllViews();
+        zoomStops=ZoomMath.presets(zoomMin,zoomMax);
+        zoomButtons=new TextView[zoomStops.length];
+        for(int i=0;i<zoomStops.length;i++){
+            final float stop=zoomStops[i];
+            TextView button=label(zoomLabel(stop),13,WHITE,Typeface.BOLD);
+            button.setGravity(Gravity.CENTER);
+            button.setContentDescription(zoomLabel(stop)+
+                " 배율로 전환. 길게 눌러 다이얼 연 다음 가로로 드래그");
+            button.setMinimumHeight(dp(48));
+            button.setBackground(shape(0xB0252A2F,dp(26),0,0));
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(48),1f);
+            lp.setMargins(dp(2),0,dp(2),0);
+            zoomRow.addView(button,lp);
+            zoomButtons[i]=button;
+            button.setOnClickListener(v->animateZoomTo(stop));
+            button.setOnTouchListener((view,event)->{
+                switch(event.getActionMasked()){
+                    case MotionEvent.ACTION_DOWN:
+                        zoomHoldActive=false;zoomTouchMoved=false;
+                        zoomTouchBeginX=event.getRawX();
+                        zoomHoldBaseRatio=cameraZoom;
+                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                        zoomHoldTask=()->{
+                            zoomHoldActive=true;
+                            revealZoomDial();
+                            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                        };
+                        handler.postDelayed(zoomHoldTask,360L);
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx=event.getRawX()-zoomTouchBeginX;
+                        if(!zoomHoldActive && Math.abs(dx)>dp(13)){
+                            zoomTouchMoved=true;
+                            if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                        }
+                        if(zoomHoldActive)
+                            setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(135),
+                                zoomMin,zoomMax));
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                        if(zoomHoldActive){zoomHoldActive=false;scheduleHideZoomDial();}
+                        else if(!zoomTouchMoved)view.performClick();
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                        zoomHoldActive=false;return true;
+                    default:return true;
+                }
+            });
         }
-        catch (Exception ignored) { showMessage("이 배율은 지원되지 않습니다."); }
+        updateZoomVisuals();
+    }
+    private String zoomLabel(float value){
+        return String.format(Locale.US,Math.abs(value-Math.round(value))<.05f?
+            "%.0f×":"%.1f×",value);
+    }
+    private void updateZoomVisuals(){
+        if(zoomDial!=null)zoomDial.invalidate();
+        if(zoomButtons==null)return;
+        for(int i=0;i<zoomButtons.length && i<zoomStops.length;i++){
+            TextView button=zoomButtons[i];
+            boolean active=Math.abs(Math.log(Math.max(.1f,cameraZoom)/zoomStops[i]))<.13f;
+            button.setTextColor(active?INK:WHITE);
+            button.setBackground(shape(active?GOLD:0xA5292D31,dp(24),0,0));
+        }
+    }
+    private void cancelZoomAnimation(){
+        if(zoomAnimator!=null){
+            zoomAnimator.cancel();
+            zoomAnimator=null;
+        }
+    }
+    private void animateZoomTo(float ratio){
+        if(boundCamera==null)return;
+        cancelZoomAnimation();
+        float start=cameraZoom,target=ZoomMath.limit(ratio,zoomMin,zoomMax);
+        if(Math.abs(start-target)<.01f){setZoomDirect(target);return;}
+        zoomAnimator=ValueAnimator.ofFloat(start,target);
+        zoomAnimator.setDuration(210L);
+        zoomAnimator.setInterpolator(new DecelerateInterpolator());
+        zoomAnimator.addUpdateListener(a->setZoomDirect((float)a.getAnimatedValue()));
+        zoomAnimator.start();
+        scheduleHideZoomDial();
+    }
+    private void setZoom(float ratio){animateZoomTo(ratio);}
+    private void setZoomDirect(float ratio){
+        if(boundCamera==null)return;
+        float wanted=ZoomMath.limit(ratio,zoomMin,zoomMax);
+        if(Math.abs(wanted-cameraZoom)<.003f)return;
+        long now=android.os.SystemClock.elapsedRealtime();
+        if(now-lastZoomSentAt<18L)return;
+        lastZoomSentAt=now;
+        try{
+            boundCamera.getCameraControl().setZoomRatio(wanted);
+            cameraZoom=wanted;
+            updateZoomVisuals();
+        }catch(Exception e){Log.w(TAG,"Zoom request failed",e);}
+    }
+    private void revealZoomDial(){
+        if(zoomDial==null)return;
+        if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
+        zoomDial.setVisibility(View.VISIBLE);
+        zoomDial.invalidate();
+    }
+    private void scheduleHideZoomDial(){
+        if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
+        zoomHideTask=()->{
+            if(zoomDial!=null && !zoomHoldActive)
+                zoomDial.setVisibility(View.GONE);
+        };
+        handler.postDelayed(zoomHideTask,2800L);
+    }
+
+    /** Centered graduated iPhone-style zoom scrubber with logarithmic mapping. */
+    private final class ZoomDialView extends View{
+        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+        ZoomDialView(){super(MainActivity.this);setLayerType(View.LAYER_TYPE_SOFTWARE,null);}
+        @Override protected void onDraw(Canvas c){
+            super.onDraw(c);
+            float w=getWidth(),h=getHeight(),x0=dp(24),x1=w-dp(24);
+            if(w<=dp(80))return;
+            float y=h*.64f;
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(1.1f));paint.setColor(0x9ACCC5B9);
+            c.drawLine(x0,y,x1,y,paint);
+            for(int i=0;i<=40;i++){
+                float x=x0+(x1-x0)*i/40f;
+                float height=dp(i%5==0?10:5);
+                paint.setStrokeWidth(dp(i%5==0?1.8f:1f));
+                paint.setColor(i%5==0?0xFFF0EAE1:0x8FADA7A0);
+                c.drawLine(x,y-height*.5f,x,y+height*.5f,paint);
+            }
+            float pos=x0+(x1-x0)*ZoomMath.position(cameraZoom,zoomMin,zoomMax);
+            paint.setColor(GOLD);paint.setStrokeWidth(dp(3));
+            c.drawLine(pos,y-dp(14),pos,y+dp(14),paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(WHITE);
+            paint.setTextSize(dp(15));paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+            paint.setTextAlign(Paint.Align.CENTER);
+            c.drawText(zoomLabel(cameraZoom),pos,dp(18),paint);
+            paint.setTextSize(dp(10));paint.setColor(0xFFACA59A);
+            paint.setTextAlign(Paint.Align.LEFT);
+            c.drawText(zoomLabel(zoomMin),x0,dp(18),paint);
+            paint.setTextAlign(Paint.Align.RIGHT);
+            c.drawText(zoomLabel(zoomMax),x1,dp(18),paint);
+        }
+        @Override public boolean onTouchEvent(MotionEvent event){
+            if(boundCamera==null)return false;
+            int action=event.getActionMasked();
+            if(action==MotionEvent.ACTION_DOWN || action==MotionEvent.ACTION_MOVE){
+                if(action==MotionEvent.ACTION_DOWN){
+                    cancelZoomAnimation();revealZoomDial();
+                }
+                float margin=dp(24),range=Math.max(1f,getWidth()-margin*2f);
+                float position=Math.max(0f,Math.min(1f,(event.getX()-margin)/range));
+                setZoomDirect(ZoomMath.ratio(position,zoomMin,zoomMax));
+                return true;
+            }
+            if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL){
+                if(action==MotionEvent.ACTION_UP)performClick();
+                scheduleHideZoomDial();return true;
+            }
+            return true;
+        }
+        @Override public boolean performClick(){super.performClick();return true;}
     }
 
     private void switchCamera() {
@@ -1939,6 +2145,8 @@ public final class MainActivity extends ComponentActivity {
             videoCompatibilityFallback=false;
             videoCapabilitiesFallbackNotified=false;
             lastExposureIndex = Integer.MIN_VALUE;
+            cameraZoom=1f;
+            zoomMin=1f;zoomMax=6f;
             isFront = !isFront;
             bindCameraUseCases();
         } catch (Exception e) {
@@ -2021,6 +2229,10 @@ public final class MainActivity extends ComponentActivity {
         destroyed=true;
         handler.removeCallbacks(tick);
         if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
+        if (zoomHideTask != null) handler.removeCallbacks(zoomHideTask);
+        if (zoomHoldTask != null) handler.removeCallbacks(zoomHoldTask);
+        cancelZoomAnimation();
+        detachZoomState();
         if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
         if (recording != null) recording.stop();
         if (cameraProvider != null) cameraProvider.unbindAll();
