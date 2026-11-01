@@ -375,6 +375,15 @@ public final class MainActivity extends ComponentActivity {
             boundCamera = null;
             portraitBokehActive=false;
             cancelZoomAnimation();
+            if(zoomPendingDispatch!=null){
+                handler.removeCallbacks(zoomPendingDispatch);
+                zoomPendingDispatch=null;
+            }
+            zoomGestureActive=false;
+            zoomHoldActive=false;
+            if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+            if(zoomDial!=null)zoomDial.setVisibility(View.GONE);
+            if(presetControls!=null)presetControls.setAlpha(1f);
             detachZoomState();
             cameraProvider.unbindAll();
             lastCaptureTimeMs = 0;
@@ -2049,8 +2058,9 @@ public final class MainActivity extends ComponentActivity {
     }
     private void cancelZoomAnimation(){
         if(zoomAnimator!=null){
-            zoomAnimator.cancel();
-            zoomAnimator=null;
+            ValueAnimator canceled=zoomAnimator;
+            zoomAnimator=null; // MUST clear first; cancel() emits onAnimationEnd.
+            canceled.cancel();
         }
     }
     private void animateZoomTo(float ratio){
@@ -2217,6 +2227,12 @@ public final class MainActivity extends ComponentActivity {
                 }
                 case MotionEvent.ACTION_UP:
                     if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
+                    // Some devices coalesce fast motion into the UP event:
+                    // still perform continuous zoom even without a MOVE callback.
+                    if(!zoomHoldActive && ZoomMath.isHorizontalDrag(
+                        event.getRawX()-zoomTouchBeginX,
+                        event.getRawY()-zoomTouchBeginY,dp(7)))
+                        beginZoomScrub(this);
                     if(zoomHoldActive){
                         float dx=event.getRawX()-zoomTouchBeginX;
                         setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(155),
