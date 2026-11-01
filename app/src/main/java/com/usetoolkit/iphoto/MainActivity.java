@@ -88,6 +88,14 @@ public final class MainActivity extends ComponentActivity {
     private ActivityResultLauncher<String[]> permissions;
     private ActivityResultLauncher<String> microphonePermission;
     private boolean microphonePermissionAsked = false;
+    private int flickerPreference = FlickerGuard.AUTO;
+    private volatile int measuredFlickerHz = 0;
+    private volatile boolean lockConfirmationPosted = false;
+    private volatile boolean lockWarningPosted = false;
+    private boolean filterFallback = false;
+    private boolean photoOnlyFallback = false;
+    private boolean destroyed = false;
+    private int previewRetries = 0;
     // Explicit CameraX UseCaseGroup gives us per-frame Camera2 metadata that
     // LifecycleCameraController previously hid, needed for real sensor exposure lock.
     private ProcessCameraProvider cameraProvider;
@@ -130,16 +138,17 @@ public final class MainActivity extends ComponentActivity {
     private FrameGuide frameGuide;
     private TextView[] ratioButtons;
     private TextView focusButton, focusIndicator;
-    private boolean focusLocked = false, touchMoved = false, touchedLong = false, pinchActive = false;
+    private volatile boolean focusLocked = false;
+    private boolean touchMoved = false, touchedLong = false, pinchActive = false;
     private float focusX = -1f, focusY = -1f, touchX, touchY, lastPinchDistance, cameraZoom = 1f;
     private Runnable pendingFocusLock;
     private ExposureSunGuide exposureSunGuide;
     private boolean aeLocked = false;
-    private boolean afAeLockPending = false;
+    private volatile boolean afAeLockPending = false;
     private boolean draggingSun = false;
     private boolean awbLocked = false;
     private boolean exposureAdjustmentSupported = false;
-    private long focusRequestSerial = 0L;
+    private volatile long focusRequestSerial = 0L;
     private float exposureDragStartY, exposureDragStartEv, exposureLockBaseEv;
     private int lastExposureIndex = Integer.MIN_VALUE;
     private String frameRatio = "9:16";
@@ -179,6 +188,10 @@ public final class MainActivity extends ComponentActivity {
         // the actual status/navigation/cutout safe area.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
+        flickerPreference = getPreferences(MODE_PRIVATE).getInt("flicker_preference", FlickerGuard.AUTO);
+        if(flickerPreference!=FlickerGuard.AUTO && flickerPreference!=FlickerGuard.HZ50 &&
+           flickerPreference!=FlickerGuard.HZ60 && flickerPreference!=FlickerGuard.OFF)
+           flickerPreference=FlickerGuard.AUTO;
         try {
             selected = ColorLooks.Look.valueOf(
                 getPreferences(MODE_PRIVATE).getString("selected_look", "LUXURY"));
@@ -213,7 +226,12 @@ public final class MainActivity extends ComponentActivity {
                 CameraEffect.PREVIEW | CameraEffect.VIDEO_CAPTURE | CameraEffect.IMAGE_CAPTURE,
                 ContextCompat.getMainExecutor(this), t -> {
                     Log.e(TAG, "GPU effect failed", t);
-                    showMessage("효과 처리 오류: 다시 실행해 주세요.");
+                    runOnUiThread(()->{
+                        if(destroyed || filterFallback)return;
+                        filterFallback=true;
+                        showMessage("필터 처리 오류 · 기본 카메라 화면으로 복구합니다.");
+                        if(recording==null)preview.postDelayed(this::bindCameraUseCases,200);
+                    });
                 });
             media3.setEffects(Collections.singletonList(ColorLooks.generate(selected, intensity)));
             enableFocusGestures();
@@ -237,14 +255,20 @@ public final class MainActivity extends ComponentActivity {
 
     /** Rebind all captures at once, ensuring the preview crop matches saved media. */
     private void bindCameraUseCases() {
+        if(destroyed)return;
         if (cameraProvider == null || preview.getWidth() == 0 || preview.getHeight() == 0) {
-            preview.postDelayed(this::bindCameraUseCases, 110);
+            if(++previewRetries <= 25) preview.postDelayed(this::bindCameraUseCases, 110);
+            else showMessage("카메라 미리보기를 열지 못했습니다. 앱을 재실행해 주세요.");
             return;
         }
+        previewRetries=0;
         if (recording != null) return;
         try {
             if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
             ++currentCameraEpoch;
+            final int boundEpoch=currentCameraEpoch;
+            lockConfirmationPosted=false;
+            lockWarningPosted=false;
             hardLockRequested = false;
             hardLockVerified = false;
             fallbackLockRequested = false;
@@ -264,12 +288,20 @@ public final class MainActivity extends ComponentActivity {
                     @Override
                     public void onCaptureCompleted(android.hardware.camera2.CameraCaptureSession session,
                             CaptureRequest request, TotalCaptureResult result) {
+                        if(boundEpoch!=currentCameraEpoch || destroyed)return;
                         Long exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
                         Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
                         Float focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
                         Integer aeMode = result.get(CaptureResult.CONTROL_AE_MODE);
                         Boolean aeLock = result.get(CaptureResult.CONTROL_AE_LOCK);
                         Integer awbMode = result.get(CaptureResult.CONTROL_AWB_MODE);
+                        Integer flicker = result.get(CaptureResult.STATISTICS_SCENE_FLICKER);
+                        if(flicker!=null){
+                            if(flicker==CaptureResult.STATISTICS_SCENE_FLICKER_50HZ)
+                                measuredFlickerHz=FlickerGuard.HZ50;
+                            else if(flicker==CaptureResult.STATISTICS_SCENE_FLICKER_60HZ)
+                                measuredFlickerHz=FlickerGuard.HZ60;
+                        }
                         if (exp != null && exp > 0L && iso != null && iso > 0) {
                             lastSensorExposureNs = exp;
                             lastSensorISO = iso;
@@ -287,12 +319,15 @@ public final class MainActivity extends ComponentActivity {
             imageCapture = new ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
             imageCapture.setFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
-            videoRecorder = new Recorder.Builder().setQualitySelector(QualitySelector.from(
-                Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.FHD))).build();
-            videoCapture = VideoCapture.withOutput(videoRecorder);
             UseCaseGroup.Builder group = new UseCaseGroup.Builder()
-                .addUseCase(previewUseCase).addUseCase(imageCapture)
-                .addUseCase(videoCapture).addEffect(media3);
+                .addUseCase(previewUseCase).addUseCase(imageCapture);
+            if (!photoOnlyFallback) {
+                videoRecorder = new Recorder.Builder().setQualitySelector(QualitySelector.from(
+                    Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.FHD))).build();
+                videoCapture = VideoCapture.withOutput(videoRecorder);
+                group.addUseCase(videoCapture);
+            } else { videoRecorder=null; videoCapture=null; }
+            if (!filterFallback) group.addEffect(media3);
             ViewPort vp = preview.getViewPort();
             if (vp != null) group.setViewPort(vp);
             boundCamera = cameraProvider.bindToLifecycle(this,
@@ -302,11 +337,22 @@ public final class MainActivity extends ComponentActivity {
                 boundCamera.getCameraControl().enableTorch(true);
             manualSensorAvailable = readManualSensorCapabilities();
             lastExposureIndex = Integer.MIN_VALUE;
+            applyAntiBanding();
             handler.postDelayed(() -> setExposureEv(currentEv), 800);
             setInfo();
         } catch (Exception e) {
             Log.e(TAG, "Camera bind failed", e);
-            showMessage("카메라 연결 오류: " + e.getClass().getSimpleName());
+            if(!filterFallback) {
+                filterFallback=true;
+                showMessage("GPU 효과 연결 실패 · 효과 없이 복구합니다.");
+                preview.postDelayed(this::bindCameraUseCases,180);
+            } else if(!photoOnlyFallback) {
+                photoOnlyFallback=true;
+                showMessage("동영상 연결 불가 · 사진 전용으로 복구합니다.");
+                preview.postDelayed(this::bindCameraUseCases,180);
+            } else {
+                showMessage("카메라 연결 실패 · 카메라 권한과 기기 호환성을 확인하세요.");
+            }
         }
     }
 
@@ -334,9 +380,12 @@ public final class MainActivity extends ComponentActivity {
         consecutiveLockFrames=matches?consecutiveLockFrames+1:0;
         if (matches) mismatchFrames=0;
         else mismatchFrames++;
-        if ((hardLockRequested || fallbackLockRequested) && matches && consecutiveLockFrames>=3){
+        if ((hardLockRequested || fallbackLockRequested) && matches &&
+            consecutiveLockFrames>=3 && !lockConfirmationPosted) {
+            lockConfirmationPosted=true;
             final boolean wasHard=hardLockRequested;
             runOnUiThread(()->{
+                lockConfirmationPosted=false;
                 if(epoch!=currentCameraEpoch || serial!=focusRequestSerial || !afAeLockPending)return;
                 hardLockRequested=false;
                 hardLockVerified=wasHard;
@@ -351,8 +400,10 @@ public final class MainActivity extends ComponentActivity {
                     "센서 노출 고정 확인 · ISO와 셔터시간 유지":
                     "기기 수동 노출 미지원 · AE 잠금 모드(유지 보장 제한)");
             });
-        } else if (focusLocked && mismatchFrames>=18){
+        } else if (focusLocked && mismatchFrames>=18 && !lockWarningPosted){
+            lockWarningPosted=true;
             runOnUiThread(()->{
+                lockWarningPosted=false;
                 if(epoch!=currentCameraEpoch || serial!=focusRequestSerial || !focusLocked)return;
                 showMessage("노출 고정 해제 감지 · 재고정이 필요합니다.");
                 unlockFocus();
@@ -675,6 +726,15 @@ public final class MainActivity extends ComponentActivity {
             getPreferences(MODE_PRIVATE).edit().putBoolean("grid", enabled).apply();
         });
 
+        TextView flickerChoice = label("조명 깜빡임 감소 · " + flickerLabel(),
+            14, WHITE, Typeface.BOLD);
+        flickerChoice.setPadding(dp(16),0,dp(16),0);
+        flickerChoice.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams flickerLp=new LinearLayout.LayoutParams(-1,dp(49));
+        flickerLp.topMargin=dp(8);
+        panel.addView(flickerChoice,flickerLp);
+        flickerChoice.setOnClickListener(v->showFlickerSettings(flickerChoice));
+
         TextView filterTitle = label("필터 강도", 14, WHITE, Typeface.BOLD);
         LinearLayout.LayoutParams ftp = new LinearLayout.LayoutParams(-1, dp(35));
         ftp.topMargin = dp(14);
@@ -724,7 +784,10 @@ public final class MainActivity extends ComponentActivity {
         cp.topMargin = dp(14);
         panel.addView(close, cp);
         close.setOnClickListener(v -> dialog.dismiss());
-        dialog.setContentView(panel);
+        android.widget.ScrollView scrolling=new android.widget.ScrollView(this);
+        scrolling.setFillViewport(false);
+        scrolling.addView(panel);
+        dialog.setContentView(scrolling);
         android.view.Window window = dialog.getWindow();
         if (window != null) {
             window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
@@ -734,9 +797,60 @@ public final class MainActivity extends ComponentActivity {
         dialog.show();
         if (window != null) {
             window.setGravity(Gravity.BOTTOM);
-            window.setLayout(-1, -2);
+            window.setLayout(-1,
+                Math.min(dp(690),Math.round(getResources().getDisplayMetrics().heightPixels*.80f)));
             window.setNavigationBarColor(INK);
         }
+    }
+
+    private String flickerLabel() {
+        if(flickerPreference==FlickerGuard.HZ50)return "50Hz";
+        if(flickerPreference==FlickerGuard.HZ60)return "60Hz";
+        if(flickerPreference==FlickerGuard.OFF)return "꺼짐";
+        return "자동";
+    }
+
+    private void showFlickerSettings(TextView display) {
+        if(recording!=null || afAeLockPending){
+            showMessage("녹화/잠금 처리 중에는 변경할 수 없습니다.");return;
+        }
+        final int[] choices={FlickerGuard.AUTO,FlickerGuard.HZ50,FlickerGuard.HZ60,FlickerGuard.OFF};
+        final String[] names={"자동 감지","50Hz 조명","60Hz 조명","끄기"};
+        int index=0;
+        for(int i=0;i<choices.length;i++)if(choices[i]==flickerPreference)index=i;
+        new android.app.AlertDialog.Builder(this).setTitle("안티플리커")
+            .setSingleChoiceItems(names,index,(dialog,which)->{
+                dialog.dismiss();
+                if(focusLocked)unlockFocus();
+                flickerPreference=choices[which];
+                getPreferences(MODE_PRIVATE).edit().putInt("flicker_preference",flickerPreference).apply();
+                applyAntiBanding();
+                display.setText("조명 깜빡임 감소 · "+flickerLabel());
+            }).setNegativeButton("취소",null).show();
+    }
+
+    private void applyAntiBanding() {
+        if(boundCamera==null || hardLockRequested || hardLockVerified)return;
+        try{
+            int[] supported=Camera2CameraInfo.from(boundCamera.getCameraInfo())
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES);
+            if(supported==null || supported.length==0)return;
+            int chosen=CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO;
+            if(flickerPreference==FlickerGuard.HZ50)chosen=CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ;
+            else if(flickerPreference==FlickerGuard.HZ60)chosen=CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ;
+            else if(flickerPreference==FlickerGuard.OFF)chosen=CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF;
+            boolean found=false;
+            for(int v:supported)if(v==chosen)found=true;
+            if(!found){
+                chosen=supported[0];
+                for(int v:supported)if(v==CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)chosen=v;
+                showMessage("현재 기기에서 해당 주파수를 지원하지 않아 대체 설정을 적용합니다.");
+            }
+            CaptureRequestOptions opts=new CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,chosen)
+                .build();
+            Camera2CameraControl.from(boundCamera.getCameraControl()).addCaptureRequestOptions(opts);
+        }catch(Exception e){Log.w(TAG,"Antibanding not supported",e);}
     }
 
     private void selectRatio(String ratio) {
@@ -801,6 +915,7 @@ public final class MainActivity extends ComponentActivity {
 
     private void selectLook(ColorLooks.Look look) {
         if (recording != null) { showMessage("녹화 중에는 필터를 변경할 수 없습니다."); return; }
+        if (filterFallback) { showMessage("이 기기의 GPU 필터가 지원되지 않습니다."); return; }
         selected = look;
         getPreferences(MODE_PRIVATE).edit()
             .putString("selected_look", look.name()).apply();
@@ -815,7 +930,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void applyLook() {
-        if (media3 == null) return;
+        if (media3 == null || filterFallback) return;
         try {
             if (selected == ColorLooks.Look.ORIGINAL || intensity == 0f)
                 media3.setEffects(Collections.emptyList());
@@ -830,12 +945,17 @@ public final class MainActivity extends ComponentActivity {
         String currentLabel = selected == ColorLooks.Look.CANON50
             ? "CANON R5 II · 50mm LOOK"
             : selected.label.toUpperCase(Locale.US);
-        info.setText(currentLabel + "  ·  " + frameRatio + "  ·  " + (isVideo ? "VIDEO" : "PHOTO"));
+        info.setText(currentLabel + " · " + frameRatio +
+            (filterFallback?" · 필터 중단":"") +
+            " · " + (isVideo?"VIDEO":"PHOTO"));
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
     }
 
     private void changeMode(boolean video) {
         if (recording != null) return;
+        if (video && photoOnlyFallback) {
+            showMessage("이 카메라에서는 사진만 촬영할 수 있습니다.");return;
+        }
         isVideo = video;
         modePhoto.setTextColor(video ? MUTED : GOLD);
         modePhoto.setTypeface(null, video ? Typeface.NORMAL : Typeface.BOLD);
@@ -847,6 +967,9 @@ public final class MainActivity extends ComponentActivity {
 
     private void onShutter() {
         if (boundCamera == null) { showMessage("카메라를 준비하는 중입니다."); return; }
+        if (isVideo && videoRecorder == null) {
+            showMessage("동영상 촬영을 지원하지 않는 카메라입니다.");return;
+        }
         if (afAeLockPending) {
             showMessage("센서 잠금 결과를 확인한 뒤 촬영해 주세요.");
             return;
@@ -1080,8 +1203,15 @@ public final class MainActivity extends ComponentActivity {
                     supportedISO.getUpper(), lastSensorISO));
                 baselineShutterNs=Math.max(supportedShutterNs.getLower(), Math.min(
                     supportedShutterNs.getUpper(), lastSensorExposureNs));
-                requestedISO=baselineISO;
-                requestedShutterNs=baselineShutterNs;
+                int effectiveHz=FlickerGuard.effectiveHz(flickerPreference,measuredFlickerHz);
+                FlickerGuard.Choice quantized=FlickerGuard.choose(
+                    baselineShutterNs,baselineISO,supportedISO.getLower(),supportedISO.getUpper(),
+                    supportedShutterNs.getLower(),Math.min(33_333_333L,supportedShutterNs.getUpper()),
+                    effectiveHz);
+                requestedISO=quantized.iso;
+                requestedShutterNs=quantized.shutterNs;
+                if(quantized.shortExposure && effectiveHz!=0)
+                    showMessage("빠른 셔터에서는 LED 깜빡임이 남을 수 있습니다.");
                 manualFocusRequested=canManuallySetFocus();
                 if(manualFocusRequested){
                     targetFocusDistance=lastLensFocusDistance;
@@ -1152,6 +1282,7 @@ public final class MainActivity extends ComponentActivity {
             hardLockVerified || hardLockRequested || fallbackLockRequested;
         ++focusRequestSerial;
         afAeLockPending=false;focusLocked=false;aeLocked=false;awbLocked=false;
+        lockConfirmationPosted=false;lockWarningPosted=false;
         hardLockRequested=false;hardLockVerified=false;fallbackLockRequested=false;
         manualFocusRequested=false;consecutiveLockFrames=0;mismatchFrames=0;
         draggingSun=false;
@@ -1163,6 +1294,7 @@ public final class MainActivity extends ComponentActivity {
                 }
                 boundCamera.getCameraControl().cancelFocusAndMetering();
             }catch(Exception e){Log.w(TAG,"AE/AF unlock error",e);}
+            if(hadAE)handler.postDelayed(this::applyAntiBanding,140);
         }
         if(focusIndicator!=null)focusIndicator.setVisibility(View.GONE);
         if(exposureSunGuide!=null)exposureSunGuide.setVisibility(View.GONE);
@@ -1224,6 +1356,8 @@ public final class MainActivity extends ComponentActivity {
                         recordTimer.setVisibility(View.GONE);
                         capture.setBackground(shape(0xFFFF5658, dp(34), 0, 0));
                         recording = null;
+                        if(filterFallback && !destroyed)
+                            preview.postDelayed(this::bindCameraUseCases,160);
                         if (!end.hasError()) {
                             lastMedia = end.getOutputResults().getOutputUri();
                             showMessage("영상이 갤러리에 저장되었습니다.");
@@ -1319,6 +1453,8 @@ public final class MainActivity extends ComponentActivity {
         if (boundCamera == null || recording != null || busy) return;
         try {
             unlockFocus();
+            filterFallback=false;
+            photoOnlyFallback=false;
             lastExposureIndex = Integer.MIN_VALUE;
             isFront = !isFront;
             bindCameraUseCases();
@@ -1399,6 +1535,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     @Override protected void onDestroy() {
+        destroyed=true;
         handler.removeCallbacks(tick);
         if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
         if (focusLocked || aeLocked || afAeLockPending) unlockFocus();
