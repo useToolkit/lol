@@ -63,6 +63,8 @@ import androidx.camera.video.QualitySelector;
 import androidx.camera.video.Recording;
 import androidx.camera.video.VideoRecordEvent;
 import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.extensions.ExtensionsManager;
+import androidx.camera.extensions.ExtensionMode;
 import androidx.camera.view.LifecycleCameraController;
 import androidx.camera.view.PreviewView;
 import androidx.camera.view.video.AudioConfig;
@@ -169,6 +171,9 @@ public final class MainActivity extends ComponentActivity {
     private boolean effectiveStabilization = false;
     private boolean videoCompatibilityFallback = false;
     private boolean video60Supported = false;
+    private ExtensionsManager extensionsManager;
+    private boolean portraitBokehRequested = false;
+    private boolean portraitBokehActive = false;
     private boolean videoCapabilitiesFallbackNotified = false;
     private boolean proMode = false;
     private TextView modePro, proTelemetry;
@@ -205,6 +210,7 @@ public final class MainActivity extends ComponentActivity {
         // the actual status/navigation/cutout safe area.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
+        portraitBokehRequested=getPreferences(MODE_PRIVATE).getBoolean("portrait_bokeh",false);
         videoQualitySetting=getPreferences(MODE_PRIVATE).getString("video_quality","FHD");
         if(!videoQualitySetting.equals("UHD")&&!videoQualitySetting.equals("FHD")&&
            !videoQualitySetting.equals("HD"))videoQualitySetting="FHD";
@@ -270,6 +276,22 @@ public final class MainActivity extends ComponentActivity {
                 try {
                     cameraProvider = future.get();
                     preview.post(this::bindCameraUseCases);
+                    // Extensions can initialize asynchronously without delaying camera start.
+                    try {
+                        ListenableFuture<ExtensionsManager> ext=ExtensionsManager.getInstanceAsync(
+                            this,cameraProvider);
+                        ext.addListener(()->{
+                            try {
+                                extensionsManager=ext.get();
+                                if(portraitBokehRequested && recording==null && !destroyed)
+                                    preview.post(this::bindCameraUseCases);
+                            } catch(Exception e){
+                                Log.w(TAG,"OEM portrait extensions unavailable",e);
+                            }
+                        },ContextCompat.getMainExecutor(this));
+                    } catch(Exception e) {
+                        Log.w(TAG,"CameraX extensions init failed",e);
+                    }
                 } catch (Exception e) {
                     cameraInitializationStarted = false;
                     Log.e(TAG, "Camera provider failed", e);
@@ -306,12 +328,46 @@ public final class MainActivity extends ComponentActivity {
             consecutiveLockFrames = 0;
             mismatchFrames = 0;
             boundCamera = null;
+            portraitBokehActive=false;
             cameraProvider.unbindAll();
             lastCaptureTimeMs = 0;
             lastSensorExposureNs = 0;
             lastSensorISO = 0;
             lastLensFocusDistance = -1f;
             lastResultAeMode = -1;
+            if (portraitBokehRequested && !isFront && !isVideo && extensionsManager!=null) {
+                try {
+                    if(extensionsManager.isExtensionAvailable(
+                        CameraSelector.DEFAULT_BACK_CAMERA,ExtensionMode.BOKEH)){
+                        Preview bokehPreview=new Preview.Builder().build();
+                        bokehPreview.setSurfaceProvider(preview.getSurfaceProvider());
+                        ImageCapture bokehPhoto=new ImageCapture.Builder()
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
+                        bokehPhoto.setFlashMode(flash ?
+                            ImageCapture.FLASH_MODE_ON:ImageCapture.FLASH_MODE_OFF);
+                        CameraSelector bokehSelector=extensionsManager.getExtensionEnabledCameraSelector(
+                            CameraSelector.DEFAULT_BACK_CAMERA,ExtensionMode.BOKEH);
+                        boundCamera=cameraProvider.bindToLifecycle(this,
+                            bokehSelector,bokehPreview,bokehPhoto);
+                        previewUseCase=bokehPreview;imageCapture=bokehPhoto;
+                        videoRecorder=null;videoCapture=null;
+                        portraitBokehActive=true;
+                        setInfo();
+                        showMessage("제조사 인물 보케 적용 · 사진 모드만 지원하며 색감 LUT는 잠시 해제됩니다.");
+                        return;
+                    } else {
+                        portraitBokehRequested=false;
+                        getPreferences(MODE_PRIVATE).edit().putBoolean("portrait_bokeh",false).apply();
+                        showMessage("이 갤럭시 카메라는 인물 배경 흐림 확장을 지원하지 않습니다.");
+                    }
+                } catch(Exception error){
+                    portraitBokehRequested=false;
+                    getPreferences(MODE_PRIVATE).edit().putBoolean("portrait_bokeh",false).apply();
+                    Log.w(TAG,"OEM Bokeh failed, returning to standard",error);
+                    cameraProvider.unbindAll();
+                    showMessage("인물 배경 흐림을 사용할 수 없어 일반 촬영으로 복구합니다.");
+                }
+            }
             Preview.Builder pb = new Preview.Builder();
             new Camera2Interop.Extender<>(pb).setSessionCaptureCallback(
                 new CameraCaptureSession.CaptureCallback() {
@@ -873,6 +929,26 @@ public final class MainActivity extends ComponentActivity {
         panel.addView(flickerChoice,flickerLp);
         flickerChoice.setOnClickListener(v->showFlickerSettings(flickerChoice));
 
+        TextView bokehRow=label("인물 배경 흐림 · "+
+            (portraitBokehRequested?"켜짐":"꺼짐"),14,WHITE,Typeface.BOLD);
+        bokehRow.setPadding(dp(16),0,dp(16),0);
+        bokehRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams blp=new LinearLayout.LayoutParams(-1,dp(48));
+        blp.topMargin=dp(8);panel.addView(bokehRow,blp);
+        bokehRow.setOnClickListener(v->{
+            if(recording!=null){showMessage("녹화 중에는 설정할 수 없습니다.");return;}
+            if(!portraitBokehRequested){
+                if(extensionsManager==null || !extensionsManager.isExtensionAvailable(
+                    CameraSelector.DEFAULT_BACK_CAMERA,ExtensionMode.BOKEH)){
+                    showMessage("제조사 Bokeh 확장이 지원되지 않는 기기입니다.");
+                    return;
+                }
+            }
+            portraitBokehRequested=!portraitBokehRequested;
+            getPreferences(MODE_PRIVATE).edit().putBoolean("portrait_bokeh",portraitBokehRequested).apply();
+            bokehRow.setText("인물 배경 흐림 · "+(portraitBokehRequested?"켜짐":"꺼짐"));
+            if(cameraProvider!=null)bindCameraUseCases();
+        });
         TextView qualityRow = label("영상 화질 · "+videoQualitySetting+" / "+
             videoFpsSetting+"fps",14,WHITE,Typeface.BOLD);
         qualityRow.setPadding(dp(16),0,dp(16),0);
@@ -1079,6 +1155,10 @@ public final class MainActivity extends ComponentActivity {
 
     private void selectLook(ColorLooks.Look look) {
         if (recording != null) { showMessage("녹화 중에는 필터를 변경할 수 없습니다."); return; }
+        if(portraitBokehActive) {
+            showMessage("제조사 보케 촬영에서는 색감 LUT를 함께 적용할 수 없습니다. 설정에서 보케를 끄세요.");
+            return;
+        }
         if (filterFallback) { showMessage("이 기기의 GPU 필터가 지원되지 않습니다."); return; }
         selected = look;
         getPreferences(MODE_PRIVATE).edit()
@@ -1094,7 +1174,7 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void applyLook() {
-        if (media3 == null || filterFallback) return;
+        if (media3 == null || filterFallback || portraitBokehActive) return;
         try {
             if (selected == ColorLooks.Look.ORIGINAL || intensity == 0f)
                 media3.setEffects(Collections.emptyList());
@@ -1114,6 +1194,7 @@ public final class MainActivity extends ComponentActivity {
             effectiveVideoFps+"fps"+(effectiveStabilization?" · STAB":"")):"";
         info.setText(currentLabel + " · " + frameRatio +
             (filterFallback?" · 필터 중단":"") +
+            (portraitBokehActive?" · 제조사 보케":"") +
             " · " + (proMode?"PRO":isVideo?"VIDEO":"PHOTO")+qualityInfo);
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
     }
@@ -1185,6 +1266,8 @@ public final class MainActivity extends ComponentActivity {
             showMessage("이 카메라에서는 사진만 촬영할 수 있습니다.");return;
         }
         isVideo = video;
+        if(portraitBokehActive && video && cameraProvider!=null)
+            preview.postDelayed(this::bindCameraUseCases,70);
         proMode=false;
         if(modePro!=null)modePro.setTextColor(MUTED);
         if(proTelemetry!=null)proTelemetry.setVisibility(View.GONE);
@@ -1364,6 +1447,10 @@ public final class MainActivity extends ComponentActivity {
     private void focusAt(float x,float y,boolean lock){
         if(boundCamera==null||boundCamera.getCameraControl()==null||
             preview.getWidth()<2||preview.getHeight()<2)return;
+        if (portraitBokehActive && lock) {
+            showMessage("인물 보케 모드에서는 장시간 노출 잠금이 지원되지 않습니다.");
+            lock=false;
+        }
         if(focusLocked || aeLocked || afAeLockPending)unlockFocus();
         x=Math.max(1,Math.min(preview.getWidth()-1,x));
         y=Math.max(1,Math.min(preview.getHeight()-1,y));
