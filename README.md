@@ -1,5 +1,23 @@
 # I photo — 갤럭시 전용 시네마틱 카메라
 
+## v2.2.1 — 아이폰형 직접 드래그 줌 전면 수정
+
+**핵심 변경:** 이전에는 숫자 버튼별 터치가 각각 처리돼 손가락을 움직이기 시작하면 드래그가 취소되기도 했습니다. 이제 확대·축소는 숫자를 누르는 기능이 아니라 한 손가락의 드래그가 주 조작입니다.
+
+- 하단 줌 선택 영역 전체를 `ZoomControlView` 하나의 터치 영역으로 구현했습니다. 좌우로 약 7dp 이상 움직이기 시작하면 길게 누르기를 기다리지 않고 즉시 연속 줌을 시작합니다.
+- 약 290ms 길게 눌러도 원호(반원형) 줌 휠이 나타납니다. **누른 손가락을 떼지 않고 좌우로 계속 움직이면** 실제 카메라 배율이 이에 맞춰 실시간으로 변합니다.
+- 손가락을 줌 휠 위에 다시 놓고 좌우로 드래그해도 정밀한 배율 조절이 됩니다. 중앙 눈금은 고정되어 있고 숫자 눈금이 줌값에 맞춰 이동합니다.
+- 다이얼을 `FrameLayout` 오버레이로 올려 기존과 달리 조작 중 하단 UI 위치가 바뀌지 않습니다.
+- 짧은 탭은 빠른 배율 전환으로 유지하되, 선택한 현재 수치가 화면의 금색 원 안에 실시간 표시됩니다. `ZoomState` 피드백은 제스처 동안 비동기 지연값으로 UI를 되돌리지 않도록 처리합니다.
+- 터치 이동 중 줌 요청은 약 60Hz로 병합해 카메라 과부하를 피하고, 손을 뗄 때 마지막 배율을 강제로 전달합니다.
+- 좌우 드래그 활성화·역방향·한계값 동작에 대한 `ZoomMathTest` 단위 테스트 추가.
+- 촬영 화면 핀치 줌과 하드웨어 지원 배율 조건, 사진/영상 기능 및 손떨림 보정 설정은 그대로 유지합니다.
+- Apple 카메라와 동일 소스/비공개 API를 복제한 것이 아니라 공개된 **줌 조작 동작 방식**을 Android CameraX에 구현했습니다.
+- 0.5× 등 초광각은 갤럭시가 현재 카메라 세션에 제공하는 ZoomState 범위 밖이면 보이지 않습니다.
+- APK 빌드는 GitHub Actions에서 검증되며 실기기 촬영·삼성 보안 경고 해소는 별도 확인이 필요합니다.
+
+[다운로드: I photo v2.2.1 Release](https://raw.githubusercontent.com/useToolkit/lol/i-photo-apk/I-photo-v2.2.1-release.apk)
+
 ## v2.2.0 — iPhone-like zoom and hardware-assisted stabilization
 
 ### 줌 인터랙션
@@ -26,7 +44,7 @@
 - **기존 문제:** 고정 signing keystore가 GitHub Secrets에 없는 상태이므로 APK는 매번 일회용 키로 서명됩니다. 이전 버전을 삭제해야 설치될 수 있습니다.
 
 ### 직접 다운로드
-- [I photo v2.2.0 APK](https://raw.githubusercontent.com/useToolkit/lol/i-photo-apk/I-photo-v2.2.0-release.apk)
+- [I photo v2.2.0 APK](https://raw.githubusercontent.com/useToolkit/lol/i-photo-apk/I-photo-v2.2.1-release.apk)
 
 ## v2.1.0 — 통합 카메라 업데이트 (v1.9 UI / v2.0 색감 / v2.1 촬영)
 
