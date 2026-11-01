@@ -1,5 +1,33 @@
 # I photo — 갤럭시 전용 시네마틱 카메라
 
+## v2.2.0 — iPhone-like zoom and hardware-assisted stabilization
+
+### 줌 인터랙션
+- 카메라 화면 하단에서 **동적 배율 버튼**: 기기의 CameraX ZoomState 범위 내에서만 0.5× / 1× / 2× / 3× / 5× / 8× 등을 표시합니다. **지원하지 않는 배율을 광학 렌즈로 가짜 표시하지 않습니다.**
+- 탭하면 210ms 디셀러레이션 애니메이션으로 부드럽게 확대/축소합니다.
+- 줌 버튼을 약 360ms 길게 누르면 눈금형 가로 줌 다이얼이 열리며, 그대로 좌우로 드래그해 연속 배율을 설정할 수 있습니다. 길게 누를 때 진동 피드백을 제공합니다.
+- 미리보기에서 두 손가락 핀치 확대/축소가 실제 ZoomState 범위 내에서 연속 동작합니다. 영상 녹화 중에도 줌 조작을 허용합니다.
+- 로그형 줌 다이얼은 낮은 배율에서도 미세한 줌을 가능하게 합니다. CameraX ZoomState LiveData로 실제 배율 변경과 UI를 동기화합니다.
+- 줌 수학을 Android와 분리한 `ZoomMath.java` 및 자동 단위 테스트를 추가했습니다.
+
+### 손떨림 방지 기능
+- **끄기 / 표준 / 강화** 3단계. 표준은 가능한 경우 VideoCapture EIS를 사용하고, 불가능할 때 기기 OIS를 요청합니다.
+- 강화는 Android 13+와 기기 Preview stabilization 지원, FHD 이하 30fps 등 조건이 만족되면 **미리보기와 영상의 동시 EIS 안정화**를 요청합니다.
+- CameraX Preview ON + VideoCapture OFF 충돌을 피하기 위한 기능 선택 정책 `StabilizationPlan` 및 단위 테스트를 추가했습니다.
+- Camera2 CaptureResult에서 실제 EIS·OIS 모드를 읽어 상태 배지에 `STAB 영상 EIS`, `STAB 미리보기+영상`, `STAB 렌즈 OIS`, `STAB 제한` 등으로 표시합니다. **지원되지 않는 보정을 적용됐다고 표시하지 않습니다.**
+- 4K·60fps는 EIS 적용을 보장하지 않으므로 지원 기기에서 OIS를 요청하고 상태를 확인합니다.
+- AE/AF 수동 노출 고정 시 60fps 녹화 셔터 상한을 1/60초에 맞춰 제한하고 ISO를 보정합니다.
+
+### 제한사항·보안
+- Apple iPhone 카메라 앱 고유의 소프트웨어·UI/디자인을 복제한 것이 아니라, 공개된 줌 **조작 방식**을 갤럭시 CameraX에 맞게 구현한 것입니다.
+- **0.5× 초광각, 5× 망원, 광학 렌즈 전환은 갤럭시 카메라가 앱에 노출하는 사용 가능한 범위에 달려 있습니다.** 지원하지 않는 경우 별도 렌즈 전환은 구현되지 않으며 디지털 줌일 수 있습니다.
+- 광학 OIS/EIS 품질 및 떨림 보정 효과는 스마트폰 기종, 조명, 녹화 해상도·fps에 따라 달라집니다. 실제 갤럭시 기기에서 촬영 테스트가 필요합니다.
+- GitHub Release 빌드 및 테스트 통과는 실제 기기 호환성이나 삼성 피싱 경고 해결을 보증하지 않습니다. 보호 기능을 끄지 마세요.
+- **기존 문제:** 고정 signing keystore가 GitHub Secrets에 없는 상태이므로 APK는 매번 일회용 키로 서명됩니다. 이전 버전을 삭제해야 설치될 수 있습니다.
+
+### 직접 다운로드
+- [I photo v2.2.0 APK](https://raw.githubusercontent.com/useToolkit/lol/i-photo-apk/I-photo-v2.2.0-release.apk)
+
 ## v2.1.0 — 통합 카메라 업데이트 (v1.9 UI / v2.0 색감 / v2.1 촬영)
 
 ### v1.9 UI·UX
