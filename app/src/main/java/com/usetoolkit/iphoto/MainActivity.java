@@ -169,6 +169,7 @@ public final class MainActivity extends ComponentActivity {
     private boolean effectiveStabilization = false;
     private boolean videoCompatibilityFallback = false;
     private boolean video60Supported = false;
+    private boolean videoCapabilitiesFallbackNotified = false;
     private boolean proMode = false;
     private TextView modePro, proTelemetry;
     private ColorLooks.Scene scenePreference = ColorLooks.Scene.AUTO;
@@ -353,12 +354,51 @@ public final class MainActivity extends ComponentActivity {
             imageCapture.setFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
             UseCaseGroup.Builder group = new UseCaseGroup.Builder()
                 .addUseCase(previewUseCase).addUseCase(imageCapture);
+            CameraSelector selector=isFront?
+                CameraSelector.DEFAULT_FRONT_CAMERA:CameraSelector.DEFAULT_BACK_CAMERA;
             if (!photoOnlyFallback) {
-                videoRecorder = new Recorder.Builder().setQualitySelector(QualitySelector.from(
-                    Quality.FHD, FallbackStrategy.higherQualityOrLowerThan(Quality.FHD))).build();
-                videoCapture = VideoCapture.withOutput(videoRecorder);
+                CameraInfo selectedInfo=selector.filter(
+                    cameraProvider.getAvailableCameraInfos()).get(0);
+                VideoCapabilities caps=Recorder.getVideoCapabilities(selectedInfo);
+                boolean uhd=caps.isQualitySupported(Quality.UHD,DynamicRange.SDR);
+                boolean fhd=caps.isQualitySupported(Quality.FHD,DynamicRange.SDR);
+                boolean hd=caps.isQualitySupported(Quality.HD,DynamicRange.SDR);
+                effectiveVideoQuality=VideoProfile.chooseQuality(
+                    videoCompatibilityFallback?"FHD":videoQualitySetting,uhd,fhd,hd);
+                Quality q=effectiveVideoQuality.equals("UHD")?Quality.UHD:
+                    effectiveVideoQuality.equals("HD")?Quality.HD:Quality.FHD;
+                video60Supported=false;
+                try{
+                    Range<Integer>[] ranges=Camera2CameraInfo.from(selectedInfo)
+                        .getCameraCharacteristic(
+                            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+                    if(ranges!=null)for(Range<Integer> range:ranges){
+                        if(range.getUpper()>=60 && range.getLower()<=60){
+                            video60Supported=true;break;
+                        }
+                    }
+                }catch(Exception fpsError){Log.w(TAG,"Cannot query supported fps",fpsError);}
+                effectiveVideoFps=VideoProfile.chooseFps(
+                    videoCompatibilityFallback?30:videoFpsSetting,video60Supported);
+                effectiveStabilization=VideoProfile.allowStabilization(
+                    stabilizationRequested,caps.isStabilizationSupported(),
+                    effectiveVideoQuality,effectiveVideoFps);
+                videoRecorder=new Recorder.Builder()
+                    .setQualitySelector(QualitySelector.from(q,
+                        FallbackStrategy.higherQualityOrLowerThan(q))).build();
+                VideoCapture.Builder<Recorder> videoBuilder=new VideoCapture.Builder<>(videoRecorder);
+                videoBuilder.setTargetFrameRate(new Range<>(effectiveVideoFps,effectiveVideoFps));
+                if(effectiveStabilization)videoBuilder.setVideoStabilizationEnabled(true);
+                videoCapture=videoBuilder.build();
                 group.addUseCase(videoCapture);
-            } else { videoRecorder=null; videoCapture=null; }
+                if(!videoCapabilitiesFallbackNotified &&
+                    (!effectiveVideoQuality.equals(videoQualitySetting) ||
+                    effectiveVideoFps!=videoFpsSetting)){
+                    videoCapabilitiesFallbackNotified=true;
+                    showMessage("기기 지원 범위에 맞춰 "+effectiveVideoQuality+" "+
+                        effectiveVideoFps+"fps로 조정합니다.");
+                }
+            } else { videoRecorder=null; videoCapture=null; effectiveStabilization=false; }
             if (!filterFallback) group.addEffect(media3);
             ViewPort vp = preview.getViewPort();
             if (vp != null) group.setViewPort(vp);
@@ -374,7 +414,13 @@ public final class MainActivity extends ComponentActivity {
             setInfo();
         } catch (Exception e) {
             Log.e(TAG, "Camera bind failed", e);
-            if(!filterFallback) {
+            if(!videoCompatibilityFallback && !photoOnlyFallback &&
+                (videoQualitySetting.equals("UHD") || videoFpsSetting==60 ||
+                 stabilizationRequested)) {
+                videoCompatibilityFallback=true;
+                showMessage("고급 영상 조합이 지원되지 않아 1080p·30fps로 복구합니다.");
+                preview.postDelayed(this::bindCameraUseCases,180);
+            } else if(!filterFallback) {
                 filterFallback=true;
                 showMessage("GPU 효과 연결 실패 · 효과 없이 복구합니다.");
                 preview.postDelayed(this::bindCameraUseCases,180);
@@ -845,6 +891,8 @@ public final class MainActivity extends ComponentActivity {
         stabRow.setOnClickListener(v->{
             if(recording!=null){showMessage("녹화 중에는 변경할 수 없습니다.");return;}
             stabilizationRequested=!stabilizationRequested;
+            videoCompatibilityFallback=false;
+            videoCapabilitiesFallbackNotified=false;
             getPreferences(MODE_PRIVATE).edit().putBoolean("video_stabilization",stabilizationRequested).apply();
             stabRow.setText("영상 흔들림 보정 · "+(stabilizationRequested?"요청":"끄기"));
             if(cameraProvider!=null)bindCameraUseCases();
@@ -1093,6 +1141,7 @@ public final class MainActivity extends ComponentActivity {
                 videoFpsSetting=index==1?60:30;
                 getPreferences(MODE_PRIVATE).edit().putInt("video_fps",videoFpsSetting).apply();
                 videoCompatibilityFallback=false;
+                videoCapabilitiesFallbackNotified=false;
                 if(cameraProvider!=null)bindCameraUseCases();
             }).setNegativeButton("취소",null).show();
     }
@@ -1637,6 +1686,8 @@ public final class MainActivity extends ComponentActivity {
             unlockFocus();
             filterFallback=false;
             photoOnlyFallback=false;
+            videoCompatibilityFallback=false;
+            videoCapabilitiesFallbackNotified=false;
             lastExposureIndex = Integer.MIN_VALUE;
             isFront = !isFront;
             bindCameraUseCases();
