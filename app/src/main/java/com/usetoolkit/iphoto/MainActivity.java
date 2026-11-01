@@ -875,7 +875,7 @@ public final class MainActivity extends ComponentActivity {
         zoomDial.setAlpha(0f);
         zoomDial.setContentDescription("원호 줌 다이얼. 좌우로 드래그하여 연속 확대·축소");
         FrameLayout.LayoutParams wheelLp=new FrameLayout.LayoutParams(
-            -1,dp(142),Gravity.TOP);
+            -1,dp(120),Gravity.TOP);
         wheelLp.topMargin=dp(200);
         root.addView(zoomDial,wheelLp);
         zoomDial.setElevation(dp(10));
@@ -2038,7 +2038,10 @@ public final class MainActivity extends ComponentActivity {
         zoomControl.setContentDescription(
             "연속 줌 "+zoomLabel(cameraZoom)+
             ". 배율을 누른 채 좌우로 끌면 바로 확대·축소됩니다. 길게 누르면 원호 다이얼이 나타납니다.");
-        zoomRow.addView(zoomControl,new LinearLayout.LayoutParams(-1,dp(52)));
+        // Show only the CURRENT zoom number until the user scrubs.
+        // Keeping the touch surface 104dp wide makes it easy to hit without
+        // capturing other controls on the bottom camera bar.
+        zoomRow.addView(zoomControl,new LinearLayout.LayoutParams(dp(104),dp(52)));
         updateZoomVisuals();
     }
     private String zoomLabel(float value){
@@ -2149,49 +2152,22 @@ public final class MainActivity extends ComponentActivity {
             setClickable(true);
             setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         }
-        private float stopCenter(int index){
-            int count=Math.max(1,zoomStops.length);
-            float margin=dp(18);
-            return margin+(getWidth()-2*margin)*(index+.5f)/count;
-        }
-        private int stopAt(float x){
-            int best=0;
-            float distance=Float.MAX_VALUE;
-            for(int i=0;i<zoomStops.length;i++){
-                float d=Math.abs(x-stopCenter(i));
-                if(d<distance){distance=d;best=i;}
-            }
-            return best;
-        }
         @Override protected void onDraw(Canvas c){
             super.onDraw(c);
-            if(zoomStops.length==0)return;
-            float midY=getHeight()/2f;
-            int chosen=0;
-            float best=Float.MAX_VALUE;
-            for(int i=0;i<zoomStops.length;i++){
-                float distance=Math.abs((float)Math.log(
-                    Math.max(.01f,cameraZoom)/Math.max(.01f,zoomStops[i])));
-                if(distance<best){chosen=i;best=distance;}
-            }
-            for(int i=0;i<zoomStops.length;i++){
-                float x=stopCenter(i);
-                boolean selected=i==chosen;
-                if(selected){
-                    p.setStyle(Paint.Style.FILL);
-                    p.setColor(0xE8DDBF98);
-                    c.drawCircle(x,midY,dp(23),p);
-                }
-                p.setTypeface(Typeface.create("sans-serif-medium",
-                    selected?Typeface.BOLD:Typeface.NORMAL));
-                p.setTextSize(dp(selected?14:12));
-                p.setTextAlign(Paint.Align.CENTER);
-                p.setColor(selected?INK:WHITE);
-                Paint.FontMetrics fm=p.getFontMetrics();
-                float baseline=midY-(fm.ascent+fm.descent)/2;
-                c.drawText(selected?zoomLabel(cameraZoom):zoomLabel(zoomStops[i]),
-                    x,baseline,p);
-            }
+            float cx=getWidth()/2f;
+            float cy=getHeight()/2f;
+            // One persistent zoom readout. Preset numbers and ticks exist
+            // ONLY on the wheel revealed by dragging the current number.
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xE6DDBF98);
+            c.drawCircle(cx,cy,dp(23),p);
+            p.setTypeface(Typeface.create("sans-serif-medium",Typeface.BOLD));
+            p.setTextSize(dp(14));
+            p.setTextAlign(Paint.Align.CENTER);
+            p.setColor(INK);
+            Paint.FontMetrics metrics=p.getFontMetrics();
+            c.drawText(zoomLabel(cameraZoom),cx,
+                cy-(metrics.ascent+metrics.descent)/2f,p);
         }
         @Override public boolean onTouchEvent(MotionEvent event){
             if(boundCamera==null)return false;
@@ -2238,9 +2214,9 @@ public final class MainActivity extends ComponentActivity {
                         setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(155),
                             zoomMin,zoomMax));
                         finishZoomScrub();
-                    }else if(!zoomTouchMoved && zoomStops.length>0){
-                        int index=stopAt(event.getX());
-                        animateZoomTo(zoomStops[index]);
+                    }else if(!zoomTouchMoved){
+                        // A short tap does NOT jump to another preset.
+                        // This persistent single number is a drag handle.
                         performClick();
                     }
                     return true;
@@ -2264,11 +2240,11 @@ public final class MainActivity extends ComponentActivity {
             rootView.getLocationInWindow(rootXY);
             zoomRow.getLocationInWindow(rowXY);
             FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)zoomDial.getLayoutParams();
-            int top=rowXY[1]-rootXY[1]-rootView.getPaddingTop()-dp(151);
+            int top=rowXY[1]-rootXY[1]-rootView.getPaddingTop()-dp(127);
             lp.topMargin=Math.max(dp(76),top);
             zoomDial.setLayoutParams(lp);
         }
-        if(presetControls!=null)presetControls.setAlpha(.18f);
+        if(presetControls!=null)presetControls.setAlpha(.08f);
         if(zoomDial.getVisibility()!=View.VISIBLE){
             zoomDial.setVisibility(View.VISIBLE);
             zoomDial.setAlpha(0f);
@@ -2289,7 +2265,8 @@ public final class MainActivity extends ComponentActivity {
                 }).start();
             } else if(presetControls!=null)presetControls.setAlpha(1f);
         };
-        handler.postDelayed(zoomHideTask,2100L);
+        // Keep the camera view unobstructed shortly after the finger lifts.
+        handler.postDelayed(zoomHideTask,650L);
     }
 
     /**
@@ -2306,20 +2283,22 @@ public final class MainActivity extends ComponentActivity {
         }
         private float arcY(float x,float width){
             float distance=(x-width/2f)/(Math.max(dp(1),width/2f));
-            return dp(65)+dp(37)*distance*distance;
+            return dp(53)+dp(23)*distance*distance;
         }
         @Override protected void onDraw(Canvas c){
             super.onDraw(c);
             final float w=getWidth(),h=getHeight(),center=w/2f;
             if(w<dp(85))return;
             p.setStyle(Paint.Style.FILL);
-            p.setColor(0xE00B0F12);
-            c.drawRoundRect(dp(5),dp(3),w-dp(5),h-dp(5),dp(26),dp(26),p);
+            // 40%-opaque charcoal instead of the former 88%-opaque panel.
+            // Scene details remain visible behind the curved zoom animation.
+            p.setColor(0x660B0F12);
+            c.drawRoundRect(dp(8),dp(3),w-dp(8),h-dp(3),dp(26),dp(26),p);
             p.setTextAlign(Paint.Align.CENTER);
             p.setTypeface(Typeface.create("sans-serif-medium",Typeface.BOLD));
             p.setTextSize(dp(19));
             p.setColor(GOLD);
-            c.drawText(zoomLabel(cameraZoom),center,dp(33),p);
+            c.drawText(zoomLabel(cameraZoom),center,dp(29),p);
 
             double octave=Math.log(Math.max(.01f,cameraZoom))/Math.log(2d);
             double minOctave=Math.log(Math.max(.01f,zoomMin))/Math.log(2d);
@@ -2357,7 +2336,8 @@ public final class MainActivity extends ComponentActivity {
             p.setTextSize(dp(10));
             p.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
             p.setColor(0xBFD9D4CC);
-            c.drawText("좌우로 밀어서 확대 · 축소",center,h-dp(10),p);
+            // No large caption: the active dial should obscure as little
+            // of the live camera preview as possible.
         }
         @Override public boolean onTouchEvent(MotionEvent event){
             if(boundCamera==null)return false;
