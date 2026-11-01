@@ -158,6 +158,11 @@ public final class MainActivity extends ComponentActivity {
     private Recording recording;
     private Uri lastMedia;
     private boolean isVideo = false;
+    private boolean proMode = false;
+    private TextView modePro, proTelemetry;
+    private ColorLooks.Scene scenePreference = ColorLooks.Scene.AUTO;
+    private ColorLooks.Scene sceneResolved = ColorLooks.Scene.DAYLIGHT;
+    private volatile long lastSceneSwitchMs = 0L;
     private boolean isFront = false;
     private boolean flash = false;
     private boolean busy = false;
@@ -188,6 +193,13 @@ public final class MainActivity extends ComponentActivity {
         // the actual status/navigation/cutout safe area.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
+        try{
+            scenePreference=ColorLooks.Scene.valueOf(
+                getPreferences(MODE_PRIVATE).getString("scene_mode","AUTO"));
+        }catch(IllegalArgumentException e){scenePreference=ColorLooks.Scene.AUTO;}
+        sceneResolved=scenePreference==ColorLooks.Scene.AUTO?
+            ColorLooks.Scene.DAYLIGHT:scenePreference;
+        intensity=getPreferences(MODE_PRIVATE).getFloat("filter_intensity",.82f);
         flickerPreference = getPreferences(MODE_PRIVATE).getInt("flicker_preference", FlickerGuard.AUTO);
         if(flickerPreference!=FlickerGuard.AUTO && flickerPreference!=FlickerGuard.HZ50 &&
            flickerPreference!=FlickerGuard.HZ60 && flickerPreference!=FlickerGuard.OFF)
@@ -233,7 +245,8 @@ public final class MainActivity extends ComponentActivity {
                         if(recording==null)preview.postDelayed(this::bindCameraUseCases,200);
                     });
                 });
-            media3.setEffects(Collections.singletonList(ColorLooks.generate(selected, intensity)));
+            media3.setEffects(Collections.singletonList(
+                ColorLooks.generate(selected,intensity,sceneResolved)));
             enableFocusGestures();
             ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
             future.addListener(() -> {
@@ -306,6 +319,9 @@ public final class MainActivity extends ComponentActivity {
                             lastSensorExposureNs = exp;
                             lastSensorISO = iso;
                             lastCaptureTimeMs = android.os.SystemClock.elapsedRealtime();
+                            if(!focusLocked && !afAeLockPending && !hardLockRequested &&
+                               !hardLockVerified && recording==null)
+                                maybeChangeAutomaticScene(iso,exp);
                         }
                         if (focus != null) lastLensFocusDistance = focus;
                         if (aeMode != null) lastResultAeMode = aeMode;
@@ -354,6 +370,22 @@ public final class MainActivity extends ComponentActivity {
                 showMessage("카메라 연결 실패 · 카메라 권한과 기기 호환성을 확인하세요.");
             }
         }
+    }
+
+    /** Auto estimates brightness from Camera2 metering; it is NOT object detection. */
+    private void maybeChangeAutomaticScene(int iso,long shutterNs) {
+        if(scenePreference!=ColorLooks.Scene.AUTO || filterFallback)return;
+        long now=android.os.SystemClock.elapsedRealtime();
+        if(now-lastSceneSwitchMs<3500L)return;
+        ColorLooks.Scene next=(iso>=850 || (iso>=450 && shutterNs>=24_000_000L))?
+            ColorLooks.Scene.NIGHT:ColorLooks.Scene.DAYLIGHT;
+        if(next==sceneResolved)return;
+        lastSceneSwitchMs=now;
+        runOnUiThread(()->{
+            if(destroyed || scenePreference!=ColorLooks.Scene.AUTO ||
+               recording!=null || focusLocked || afAeLockPending)return;
+            sceneResolved=next;applyLook();setInfo();
+        });
     }
 
     /** Called from Camera2's capture thread for each COMPLETED repeating result. */
@@ -657,6 +689,41 @@ public final class MainActivity extends ComponentActivity {
         modes.addView(modeVideo, new LinearLayout.LayoutParams(dp(90), dp(32)));
         modePhoto.setOnClickListener(v -> changeMode(false));
         modeVideo.setOnClickListener(v -> changeMode(true));
+        modePro = label("프로",14,MUTED,Typeface.BOLD);
+        modePro.setGravity(Gravity.CENTER);
+        modes.addView(modePro,new LinearLayout.LayoutParams(dp(69),dp(32)));
+        modePro.setOnClickListener(v->{
+            if(recording!=null)return;
+            isVideo=false;proMode=true;
+            modePhoto.setTextColor(MUTED);modeVideo.setTextColor(MUTED);
+            modePro.setTextColor(GOLD);
+            capture.setBackground(shape(WHITE,dp(34),0,0));
+            if(proTelemetry!=null)proTelemetry.setVisibility(View.VISIBLE);
+            showProControls();setInfo();
+        });
+
+        proTelemetry=label("",11,WHITE,Typeface.BOLD);
+        proTelemetry.setGravity(Gravity.CENTER);
+        proTelemetry.setBackground(shape(0xB9161B1F,dp(12),0,0));
+        FrameLayout.LayoutParams pt=new FrameLayout.LayoutParams(-2,dp(30),
+            Gravity.TOP|Gravity.CENTER_HORIZONTAL);
+        pt.topMargin=dp(130);
+        root.addView(proTelemetry,pt);
+        proTelemetry.setVisibility(View.GONE);
+        Runnable telemetryTick=new Runnable(){
+            @Override public void run(){
+                if(destroyed)return;
+                if(proMode&&proTelemetry!=null){
+                    String iso=lastSensorISO>0?String.valueOf(lastSensorISO):"—";
+                    String shutter=lastSensorExposureNs>0?
+                        "1/"+Math.max(1L,Math.round(1e9/lastSensorExposureNs)):"—";
+                    proTelemetry.setText(" ISO "+iso+" · "+shutter+"s · "+
+                        (hardLockVerified?"LOCK":"AUTO")+" ");
+                }
+                handler.postDelayed(this,750);
+            }
+        };
+        handler.postDelayed(telemetryTick,750);
 
         recordTimer = label("", 13, WHITE, Typeface.BOLD);
         recordTimer.setGravity(Gravity.CENTER);
@@ -715,6 +782,15 @@ public final class MainActivity extends ComponentActivity {
         ratioHint.setGravity(Gravity.CENTER_VERTICAL);
         panel.addView(ratioHint, new LinearLayout.LayoutParams(-1, dp(53)));
 
+        TextView sceneRow=label("장면별 색감 · "+scenePreference.label,
+            14,WHITE,Typeface.BOLD);
+        sceneRow.setPadding(dp(16),0,dp(16),0);
+        sceneRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams sceneRowLp=new LinearLayout.LayoutParams(-1,dp(48));
+        sceneRowLp.bottomMargin=dp(8);
+        panel.addView(sceneRow,sceneRowLp);
+        sceneRow.setOnClickListener(v->{dialog.dismiss();showScenePicker();});
+
         TextView gridOption = label(grid.getVisibility() == View.VISIBLE ? "⊞  격자 끄기" : "⊞  격자 켜기", 14, WHITE, Typeface.BOLD);
         gridOption.setPadding(dp(16), 0, dp(16), 0);
         gridOption.setBackground(shape(0xFF2C3238, dp(13), 0, 0));
@@ -753,6 +829,7 @@ public final class MainActivity extends ComponentActivity {
             @Override public void onStopTrackingTouch(SeekBar bar) {
                 if (recording == null) {
                     intensity = bar.getProgress() / 100f;
+                    getPreferences(MODE_PRIVATE).edit().putFloat("filter_intensity",intensity).apply();
                     applyLook();
                 } else showMessage("녹화 종료 후 필터를 변경할 수 있습니다.");
             }
@@ -934,7 +1011,8 @@ public final class MainActivity extends ComponentActivity {
         try {
             if (selected == ColorLooks.Look.ORIGINAL || intensity == 0f)
                 media3.setEffects(Collections.emptyList());
-            else media3.setEffects(Collections.singletonList(ColorLooks.generate(selected, intensity)));
+            else media3.setEffects(Collections.singletonList(
+                ColorLooks.generate(selected,intensity,sceneResolved)));
         } catch (Exception e) {
             Log.e(TAG, "Effect changed failed", e);
             showMessage("필터 적용 오류");
@@ -947,8 +1025,41 @@ public final class MainActivity extends ComponentActivity {
             : selected.label.toUpperCase(Locale.US);
         info.setText(currentLabel + " · " + frameRatio +
             (filterFallback?" · 필터 중단":"") +
-            " · " + (isVideo?"VIDEO":"PHOTO"));
+            " · " + (proMode?"PRO":isVideo?"VIDEO":"PHOTO"));
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
+    }
+
+    private void showScenePicker() {
+        ColorLooks.Scene[] scenes=ColorLooks.Scene.values();
+        String[] names=new String[scenes.length];int choice=0;
+        for(int i=0;i<scenes.length;i++){
+            names[i]=scenes[i].label;
+            if(scenes[i]==scenePreference)choice=i;
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("장면별 색감 · 자동은 노출값으로 추정")
+            .setSingleChoiceItems(names,choice,(d,index)->{
+                d.dismiss();scenePreference=scenes[index];
+                sceneResolved=scenePreference==ColorLooks.Scene.AUTO?
+                    (lastSensorISO>=850?ColorLooks.Scene.NIGHT:ColorLooks.Scene.DAYLIGHT):
+                    scenePreference;
+                getPreferences(MODE_PRIVATE).edit().putString("scene_mode",scenePreference.name()).apply();
+                applyLook();setInfo();
+            }).setNegativeButton("취소",null).show();
+    }
+
+    private void showProControls() {
+        if(boundCamera==null)return;
+        String text="ISO "+(lastSensorISO>0?lastSensorISO:"—")+
+            " · "+(lastSensorExposureNs>0?"1/"+Math.max(1L,Math.round(1e9/lastSensorExposureNs))+"s":"셔터 —")+
+            "\n노출 잠금 "+(hardLockVerified?"센서 고정":
+                focusLocked?"기기 AE 고정":"자동")+
+            "\n노출 보정 "+String.format(Locale.US,"%+.1f EV",currentEv);
+        new android.app.AlertDialog.Builder(this).setTitle("프로 촬영")
+            .setMessage(text+"\n\n길게 눌러 AE/AF를 고정한 후 태양 아이콘을 위아래로 움직여 노출을 조절할 수 있습니다.")
+            .setPositiveButton("AE/AF 잠금",(d,v)->focusAt(
+                preview.getWidth()/2f,preview.getHeight()/2f,true))
+            .setNegativeButton("닫기",null).show();
     }
 
     private void changeMode(boolean video) {
@@ -957,6 +1068,9 @@ public final class MainActivity extends ComponentActivity {
             showMessage("이 카메라에서는 사진만 촬영할 수 있습니다.");return;
         }
         isVideo = video;
+        proMode=false;
+        if(modePro!=null)modePro.setTextColor(MUTED);
+        if(proTelemetry!=null)proTelemetry.setVisibility(View.GONE);
         modePhoto.setTextColor(video ? MUTED : GOLD);
         modePhoto.setTypeface(null, video ? Typeface.NORMAL : Typeface.BOLD);
         modeVideo.setTextColor(video ? GOLD : MUTED);
