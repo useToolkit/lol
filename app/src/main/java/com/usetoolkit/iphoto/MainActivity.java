@@ -167,6 +167,16 @@ public final class MainActivity extends ComponentActivity {
     private String videoQualitySetting = "FHD";
     private int videoFpsSetting = 30;
     private boolean stabilizationRequested = true;
+    // 0 OFF, 1 Standard (recording EIS / supported OIS), 2 Enhanced
+    // (WYSIWYG preview + recording EIS when supported).
+    private int stabilizationMode = 1;
+    private boolean previewStabilizationRequested = false;
+    private boolean opticalStabilizationAvailable = false;
+    private boolean opticalStabilizationRequested = false;
+    private volatile int actualEisMode = CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF;
+    private volatile int actualOisMode = CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF;
+    private TextView stabilizationBadge;
+    private long lastStabUiMillis = 0L;
     private String effectiveVideoQuality = "FHD";
     private int effectiveVideoFps = 30;
     private boolean effectiveStabilization = false;
@@ -217,6 +227,10 @@ public final class MainActivity extends ComponentActivity {
            !videoQualitySetting.equals("HD"))videoQualitySetting="FHD";
         videoFpsSetting=getPreferences(MODE_PRIVATE).getInt("video_fps",30)==60?60:30;
         stabilizationRequested=getPreferences(MODE_PRIVATE).getBoolean("video_stabilization",true);
+        stabilizationMode=getPreferences(MODE_PRIVATE).getInt("stabilization_mode",
+            stabilizationRequested?1:0);
+        if(stabilizationMode<0 || stabilizationMode>2) stabilizationMode=1;
+        stabilizationRequested=stabilizationMode>0;
         try{
             scenePreference=ColorLooks.Scene.valueOf(
                 getPreferences(MODE_PRIVATE).getString("scene_mode","AUTO"));
@@ -369,7 +383,33 @@ public final class MainActivity extends ComponentActivity {
                     showMessage("인물 배경 흐림을 사용할 수 없어 일반 촬영으로 복구합니다.");
                 }
             }
+            CameraSelector selector=isFront?
+                CameraSelector.DEFAULT_FRONT_CAMERA:CameraSelector.DEFAULT_BACK_CAMERA;
+            CameraInfo selectedInfo=selector.filter(cameraProvider.getAvailableCameraInfos()).get(0);
+            opticalStabilizationAvailable=false;
+            try {
+                int[] oisModes=Camera2CameraInfo.from(selectedInfo)
+                    .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION);
+                if(oisModes!=null) for(int m:oisModes)
+                    if(m==CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+                        opticalStabilizationAvailable=true;
+            }catch(Exception e){Log.w(TAG,"Cannot inspect OIS availability",e);}
+            // Enhanced stabilization is supported only on Android 13+,
+            // and requested for FHD/30 or lower, avoiding CameraX conflicts.
+            boolean previewStabCapable=false;
+            try {
+                previewStabCapable=android.os.Build.VERSION.SDK_INT>=33 &&
+                    Preview.getPreviewCapabilities(selectedInfo).isStabilizationSupported();
+            }catch(Exception e){Log.w(TAG,"Cannot inspect preview stabilization",e);}
             Preview.Builder pb = new Preview.Builder();
+            previewStabilizationRequested=false;
+            if(stabilizationMode==2 && !photoOnlyFallback &&
+               !videoCompatibilityFallback &&
+               videoFpsSetting==30 && !videoQualitySetting.equals("UHD") &&
+               previewStabCapable){
+                pb.setPreviewStabilizationEnabled(true);
+                previewStabilizationRequested=true;
+            }
             new Camera2Interop.Extender<>(pb).setSessionCaptureCallback(
                 new CameraCaptureSession.CaptureCallback() {
                     @Override
@@ -402,6 +442,7 @@ public final class MainActivity extends ComponentActivity {
                         lastResultAeLocked = Boolean.TRUE.equals(aeLock);
                         if (awbMode != null) lastResultAwbMode = awbMode;
                         inspectSensorLockResult(result);
+                        updateActualStabilization(result);
                     }
                 });
             previewUseCase = pb.build();
@@ -411,11 +452,7 @@ public final class MainActivity extends ComponentActivity {
             imageCapture.setFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
             UseCaseGroup.Builder group = new UseCaseGroup.Builder()
                 .addUseCase(previewUseCase).addUseCase(imageCapture);
-            CameraSelector selector=isFront?
-                CameraSelector.DEFAULT_FRONT_CAMERA:CameraSelector.DEFAULT_BACK_CAMERA;
             if (!photoOnlyFallback) {
-                CameraInfo selectedInfo=selector.filter(
-                    cameraProvider.getAvailableCameraInfos()).get(0);
                 VideoCapabilities caps=Recorder.getVideoCapabilities(selectedInfo);
                 boolean uhd=caps.isQualitySupported(Quality.UHD,DynamicRange.SDR);
                 boolean fhd=caps.isQualitySupported(Quality.FHD,DynamicRange.SDR);
@@ -438,8 +475,9 @@ public final class MainActivity extends ComponentActivity {
                 effectiveVideoFps=VideoProfile.chooseFps(
                     videoCompatibilityFallback?30:videoFpsSetting,video60Supported);
                 effectiveStabilization=VideoProfile.allowStabilization(
-                    stabilizationRequested,caps.isStabilizationSupported(),
+                    stabilizationMode>0,caps.isStabilizationSupported(),
                     effectiveVideoQuality,effectiveVideoFps);
+                if(!effectiveStabilization)previewStabilizationRequested=false;
                 videoRecorder=new Recorder.Builder()
                     .setQualitySelector(QualitySelector.from(q,
                         FallbackStrategy.higherQualityOrLowerThan(q))).build();
@@ -455,7 +493,11 @@ public final class MainActivity extends ComponentActivity {
                     showMessage("기기 지원 범위에 맞춰 "+effectiveVideoQuality+" "+
                         effectiveVideoFps+"fps로 조정합니다.");
                 }
-            } else { videoRecorder=null; videoCapture=null; effectiveStabilization=false; }
+            } else {
+                videoRecorder=null; videoCapture=null;
+                effectiveStabilization=false;
+                previewStabilizationRequested=false;
+            }
             if (!filterFallback) group.addEffect(media3);
             ViewPort vp = preview.getViewPort();
             if (vp != null) group.setViewPort(vp);
@@ -465,8 +507,12 @@ public final class MainActivity extends ComponentActivity {
             if (boundCamera != null && flash && isVideo)
                 boundCamera.getCameraControl().enableTorch(true);
             manualSensorAvailable = readManualSensorCapabilities();
+            opticalStabilizationRequested=stabilizationMode>0 &&
+                opticalStabilizationAvailable && !effectiveStabilization;
             lastExposureIndex = Integer.MIN_VALUE;
             applyAntiBanding();
+            applyOpticalStabilization();
+            updateStabilizationBadge();
             handler.postDelayed(() -> setExposureEv(currentEv), 800);
             setInfo();
         } catch (Exception e) {
@@ -716,6 +762,18 @@ public final class MainActivity extends ComponentActivity {
             new FrameLayout.LayoutParams(-2, dp(27), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         infoLp.topMargin = dp(61);
         root.addView(info, infoLp);
+
+        stabilizationBadge=label("STAB 준비 중",11,GOLD,Typeface.BOLD);
+        stabilizationBadge.setGravity(Gravity.CENTER);
+        stabilizationBadge.setPadding(dp(12),0,dp(12),0);
+        stabilizationBadge.setBackground(shape(0xC21A2025,dp(13),0x55FFFFFF,dp(1)));
+        FrameLayout.LayoutParams stabLp=new FrameLayout.LayoutParams(
+            -2,dp(30),Gravity.TOP|Gravity.RIGHT);
+        stabLp.topMargin=dp(98);
+        stabLp.rightMargin=dp(12);
+        root.addView(stabilizationBadge,stabLp);
+        stabilizationBadge.setOnClickListener(v->showStabilizationModePicker(stabilizationBadge));
+        updateStabilizationBadge();
 
         // Controls float OVER the preview, like the Samsung camera reference.
         LinearLayout bottom = new LinearLayout(this);
@@ -967,22 +1025,14 @@ public final class MainActivity extends ComponentActivity {
         qlp.topMargin=dp(8);
         panel.addView(qualityRow,qlp);
         qualityRow.setOnClickListener(v->{dialog.dismiss();showVideoSettings();});
-        TextView stabRow=label("영상 흔들림 보정 · "+
-            (stabilizationRequested?"요청":"끄기"),14,WHITE,Typeface.BOLD);
+        TextView stabRow=label("손떨림 보정 · "+stabilizationModeText(),
+            14,WHITE,Typeface.BOLD);
         stabRow.setPadding(dp(16),0,dp(16),0);
         stabRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
         LinearLayout.LayoutParams slp=new LinearLayout.LayoutParams(-1,dp(48));
         slp.topMargin=dp(8);
         panel.addView(stabRow,slp);
-        stabRow.setOnClickListener(v->{
-            if(recording!=null){showMessage("녹화 중에는 변경할 수 없습니다.");return;}
-            stabilizationRequested=!stabilizationRequested;
-            videoCompatibilityFallback=false;
-            videoCapabilitiesFallbackNotified=false;
-            getPreferences(MODE_PRIVATE).edit().putBoolean("video_stabilization",stabilizationRequested).apply();
-            stabRow.setText("영상 흔들림 보정 · "+(stabilizationRequested?"요청":"끄기"));
-            if(cameraProvider!=null)bindCameraUseCases();
-        });
+        stabRow.setOnClickListener(v->showStabilizationModePicker(stabRow));
 
         TextView filterTitle = label("필터 강도", 14, WHITE, Typeface.BOLD);
         LinearLayout.LayoutParams ftp = new LinearLayout.LayoutParams(-1, dp(35));
@@ -1051,6 +1101,72 @@ public final class MainActivity extends ComponentActivity {
                 Math.min(dp(690),Math.round(getResources().getDisplayMetrics().heightPixels*.80f)));
             window.setNavigationBarColor(INK);
         }
+    }
+
+    private String stabilizationModeText(){
+        return stabilizationMode==0?"끄기":stabilizationMode==2?"강화 · 미리보기+영상":"표준";
+    }
+    private void showStabilizationModePicker(TextView title){
+        if(recording!=null || busy){
+            showMessage("녹화·촬영 중에는 손떨림 설정을 변경할 수 없습니다.");
+            return;
+        }
+        final String[] choices={"끄기","표준 · 영상 EIS 및 기기 OIS",
+            "강화 · 지원 기기에서 미리보기+영상 동시 보정"};
+        new android.app.AlertDialog.Builder(this).setTitle("손떨림 방지")
+            .setSingleChoiceItems(choices,stabilizationMode,(dialog,index)->{
+                dialog.dismiss();
+                stabilizationMode=index;
+                stabilizationRequested=index>0;
+                videoCompatibilityFallback=false;
+                videoCapabilitiesFallbackNotified=false;
+                getPreferences(MODE_PRIVATE).edit()
+                    .putInt("stabilization_mode",index)
+                    .putBoolean("video_stabilization",stabilizationRequested).apply();
+                title.setText("손떨림 보정 · "+stabilizationModeText());
+                if(cameraProvider!=null && recording==null)bindCameraUseCases();
+            }).setNegativeButton("취소",null).show();
+    }
+    private void applyOpticalStabilization(){
+        if(boundCamera==null || !opticalStabilizationRequested)return;
+        try{
+            Camera2CameraControl.from(boundCamera.getCameraControl())
+                .addCaptureRequestOptions(new CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                        CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON).build());
+        }catch(Exception e){Log.w(TAG,"OIS request could not be applied",e);}
+    }
+    private void updateActualStabilization(TotalCaptureResult frame){
+        Integer eis=frame.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE);
+        Integer ois=frame.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE);
+        if(eis!=null)actualEisMode=eis;
+        if(ois!=null)actualOisMode=ois;
+        long now=android.os.SystemClock.elapsedRealtime();
+        if(now-lastStabUiMillis<850L)return;
+        lastStabUiMillis=now;
+        runOnUiThread(()->{if(!destroyed)updateStabilizationBadge();});
+    }
+    private String actualStabilizationText(){
+        if(stabilizationMode==0)return "STAB OFF";
+        if(actualEisMode==CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)
+            return "STAB 미리보기+영상";
+        if(actualEisMode==CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            return "STAB 영상 EIS";
+        if(actualOisMode==CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+            return "STAB 렌즈 OIS";
+        if(effectiveStabilization || opticalStabilizationRequested)
+            return "STAB 준비 중";
+        return "STAB 제한";
+    }
+    private void updateStabilizationBadge(){
+        if(stabilizationBadge==null)return;
+        boolean show=isVideo || stabilizationMode>0;
+        stabilizationBadge.setVisibility(show?View.VISIBLE:View.GONE);
+        String description=actualStabilizationText();
+        stabilizationBadge.setText(description);
+        stabilizationBadge.setContentDescription("손떨림 방지 상태 "+description+
+            ". 눌러 설정 변경");
+        stabilizationBadge.setTextColor(stabilizationMode==0?MUTED:GOLD);
     }
 
     private String flickerLabel() {
@@ -1623,7 +1739,10 @@ public final class MainActivity extends ComponentActivity {
                 }
                 boundCamera.getCameraControl().cancelFocusAndMetering();
             }catch(Exception e){Log.w(TAG,"AE/AF unlock error",e);}
-            if(hadAE)handler.postDelayed(this::applyAntiBanding,140);
+            if(hadAE)handler.postDelayed(()->{
+                applyAntiBanding();
+                applyOpticalStabilization();
+            },140);
         }
         if(focusIndicator!=null)focusIndicator.setVisibility(View.GONE);
         if(exposureSunGuide!=null)exposureSunGuide.setVisibility(View.GONE);
