@@ -16,6 +16,7 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.media.MediaMetadataRetriever;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -708,6 +709,9 @@ public final class MainActivity extends ComponentActivity {
         info.setPadding(dp(13), 0, dp(13), 0);
         info.setGravity(Gravity.CENTER);
         info.setBackground(shape(0x9A161B1F, dp(15), 0, 0));
+        info.setSingleLine(true);
+        info.setMaxWidth(dp(310));
+        info.setEllipsize(android.text.TextUtils.TruncateAt.END);
         FrameLayout.LayoutParams infoLp =
             new FrameLayout.LayoutParams(-2, dp(27), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         infoLp.topMargin = dp(61);
@@ -724,7 +728,7 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout presetRow = new LinearLayout(this);
         presetRow.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams pr = new LinearLayout.LayoutParams(-1, dp(43));
+        LinearLayout.LayoutParams pr = new LinearLayout.LayoutParams(-1, dp(50));
         bottom.addView(presetRow, pr);
         ColorLooks.Look[] looks = ColorLooks.Look.values();
         presets = new TextView[looks.length];
@@ -740,7 +744,7 @@ public final class MainActivity extends ComponentActivity {
             chip.setSingleLine(true);
             chip.setBackground(shape(look == selected ? GOLD : 0xA4212529, dp(19),
                 look == selected ? 0 : 0x66FFFFFF, dp(1)));
-            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, dp(34), 1f);
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, dp(46), 1f);
             cp.setMargins(dp(4), 0, dp(4), 0);
             presetRow.addView(chip, cp);
             presets[i] = chip;
@@ -749,17 +753,17 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout zoomRow = new LinearLayout(this);
         zoomRow.setGravity(Gravity.CENTER);
-        bottom.addView(zoomRow, new LinearLayout.LayoutParams(-1, dp(40)));
+        bottom.addView(zoomRow, new LinearLayout.LayoutParams(-1, dp(46)));
         TextView zoom1 = label("1×", 16, GOLD, Typeface.BOLD);
         zoom1.setGravity(Gravity.CENTER);
         zoom1.setBackground(shape(0xD12C3136, dp(30), 0, 0));
         zoom1.setContentDescription("1배 줌");
-        zoomRow.addView(zoom1, new LinearLayout.LayoutParams(dp(55), dp(38)));
+        zoomRow.addView(zoom1, new LinearLayout.LayoutParams(dp(55), dp(44)));
         zoom1.setOnClickListener(v -> setZoom(1f));
         TextView zoom2 = label("2×", 15, WHITE, Typeface.BOLD);
         zoom2.setGravity(Gravity.CENTER);
         zoom2.setContentDescription("2배 줌");
-        LinearLayout.LayoutParams z2p = new LinearLayout.LayoutParams(dp(55), dp(38));
+        LinearLayout.LayoutParams z2p = new LinearLayout.LayoutParams(dp(55), dp(44));
         z2p.leftMargin = dp(4);
         zoomRow.addView(zoom2, z2p);
         zoom2.setOnClickListener(v -> setZoom(2f));
@@ -798,18 +802,18 @@ public final class MainActivity extends ComponentActivity {
 
         LinearLayout modes = new LinearLayout(this);
         modes.setGravity(Gravity.CENTER);
-        bottom.addView(modes, new LinearLayout.LayoutParams(-1, dp(35)));
+        bottom.addView(modes, new LinearLayout.LayoutParams(-1, dp(45)));
         modePhoto = label("사진", 15, GOLD, Typeface.BOLD);
         modePhoto.setGravity(Gravity.CENTER);
-        modes.addView(modePhoto, new LinearLayout.LayoutParams(dp(90), dp(32)));
+        modes.addView(modePhoto, new LinearLayout.LayoutParams(dp(90), dp(44)));
         modeVideo = label("동영상", 15, MUTED, Typeface.NORMAL);
         modeVideo.setGravity(Gravity.CENTER);
-        modes.addView(modeVideo, new LinearLayout.LayoutParams(dp(90), dp(32)));
+        modes.addView(modeVideo, new LinearLayout.LayoutParams(dp(90), dp(44)));
         modePhoto.setOnClickListener(v -> changeMode(false));
         modeVideo.setOnClickListener(v -> changeMode(true));
         modePro = label("프로",14,MUTED,Typeface.BOLD);
         modePro.setGravity(Gravity.CENTER);
-        modes.addView(modePro,new LinearLayout.LayoutParams(dp(69),dp(32)));
+        modes.addView(modePro,new LinearLayout.LayoutParams(dp(70),dp(44)));
         modePro.setOnClickListener(v->{
             if(recording!=null)return;
             isVideo=false;proMode=true;
@@ -938,9 +942,15 @@ public final class MainActivity extends ComponentActivity {
         bokehRow.setOnClickListener(v->{
             if(recording!=null){showMessage("녹화 중에는 설정할 수 없습니다.");return;}
             if(!portraitBokehRequested){
-                if(extensionsManager==null || !extensionsManager.isExtensionAvailable(
-                    CameraSelector.DEFAULT_BACK_CAMERA,ExtensionMode.BOKEH)){
-                    showMessage("제조사 Bokeh 확장이 지원되지 않는 기기입니다.");
+                try{
+                    if(extensionsManager==null || !extensionsManager.isExtensionAvailable(
+                        CameraSelector.DEFAULT_BACK_CAMERA,ExtensionMode.BOKEH)){
+                        showMessage("제조사 Bokeh 확장이 지원되지 않는 기기입니다.");
+                        return;
+                    }
+                }catch(Exception err){
+                    Log.w(TAG,"Portrait feature unavailable",err);
+                    showMessage("기기에서 Bokeh 기능을 확인할 수 없습니다.");
                     return;
                 }
             }
@@ -1266,8 +1276,9 @@ public final class MainActivity extends ComponentActivity {
             showMessage("이 카메라에서는 사진만 촬영할 수 있습니다.");return;
         }
         isVideo = video;
-        if(portraitBokehActive && video && cameraProvider!=null)
-            preview.postDelayed(this::bindCameraUseCases,70);
+        if(cameraProvider!=null && portraitBokehRequested &&
+            (portraitBokehActive!=(!video && !isFront)))
+            preview.postDelayed(this::bindCameraUseCases,90);
         proMode=false;
         if(modePro!=null)modePro.setTextColor(MUTED);
         if(proTelemetry!=null)proTelemetry.setVisibility(View.GONE);
@@ -1679,6 +1690,7 @@ public final class MainActivity extends ComponentActivity {
                         if (!end.hasError()) {
                             lastMedia = end.getOutputResults().getOutputUri();
                             showMessage("영상이 갤러리에 저장되었습니다.");
+                            inspectSavedVideo(lastMedia);
                         } else {
                             Log.e(TAG, "Video error " + end.getError());
                             showMessage("영상 저장 오류: " + end.getError());
@@ -1690,6 +1702,38 @@ public final class MainActivity extends ComponentActivity {
             recording = null;
             showMessage("영상 녹화를 시작할 수 없습니다.");
         }
+    }
+
+    /**
+     * Verify the SAVED media format. Requested resolution/frame rate can differ
+     * from actual encoding after capability fallback or camera firmware limits.
+     */
+    private void inspectSavedVideo(Uri uri) {
+        if(uri==null)return;
+        new Thread(()->{
+            MediaMetadataRetriever retriever=new MediaMetadataRetriever();
+            try {
+                retriever.setDataSource(getApplicationContext(),uri);
+                String w=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                String h=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                String frames=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT);
+                String millis=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                String fps="프레임 정보 없음";
+                if(frames!=null && millis!=null){
+                    long count=Long.parseLong(frames),duration=Long.parseLong(millis);
+                    if(duration>0 && count>0)
+                        fps=String.format(Locale.US,"평균 %.1ffps",count*1000d/duration);
+                }
+                final String result=(w==null||h==null?"해상도 미확인":w+"×"+h)+
+                    " · "+fps;
+                Log.i(TAG,"Saved actual video format "+result);
+                runOnUiThread(()->{if(!destroyed)showMessage("녹화 파일 확인: "+result);});
+            } catch(Exception e) {
+                Log.w(TAG,"Saved video specification inspection unavailable",e);
+            } finally {
+                try{retriever.release();}catch(Exception ignored){}
+            }
+        },"IPhoto-MediaInspector").start();
     }
 
     private void stopRecording() {
