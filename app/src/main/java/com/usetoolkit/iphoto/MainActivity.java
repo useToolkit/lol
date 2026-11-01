@@ -179,6 +179,12 @@ public final class MainActivity extends ComponentActivity {
         // the actual status/navigation/cutout safe area.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
+        try {
+            selected = ColorLooks.Look.valueOf(
+                getPreferences(MODE_PRIVATE).getString("selected_look", "LUXURY"));
+        } catch (IllegalArgumentException ignored) {
+            selected = ColorLooks.Look.LUXURY;
+        }
         boolean validRatio = false;
         for (String r : RATIOS) if (r.equals(frameRatio)) validRatio = true;
         if (!validRatio) frameRatio = "9:16";
@@ -525,8 +531,10 @@ public final class MainActivity extends ComponentActivity {
             ColorLooks.Look look = looks[i];
             String shortLabel = look == ColorLooks.Look.LUXURY ? "Luxury" :
                 look == ColorLooks.Look.SOFT ? "Soft" :
-                look == ColorLooks.Look.CINEMA ? "Noir" : "Original";
-            TextView chip = label(shortLabel, 12, look == selected ? INK : WHITE, Typeface.BOLD);
+                look == ColorLooks.Look.CINEMA ? "Noir" :
+                look == ColorLooks.Look.CANON50 ? "Canon" : "원본";
+            TextView chip = label(shortLabel, 11, look == selected ? INK : WHITE, Typeface.BOLD);
+            chip.setContentDescription(look.label + " 색감 프리셋");
             chip.setGravity(Gravity.CENTER);
             chip.setSingleLine(true);
             chip.setBackground(shape(look == selected ? GOLD : 0xA4212529, dp(19),
@@ -794,6 +802,8 @@ public final class MainActivity extends ComponentActivity {
     private void selectLook(ColorLooks.Look look) {
         if (recording != null) { showMessage("녹화 중에는 필터를 변경할 수 없습니다."); return; }
         selected = look;
+        getPreferences(MODE_PRIVATE).edit()
+            .putString("selected_look", look.name()).apply();
         for (int i = 0; i < presets.length; i++) {
             boolean active = ColorLooks.Look.values()[i] == look;
             presets[i].setTextColor(active ? INK : WHITE);
@@ -817,7 +827,10 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setInfo() {
-        info.setText(selected.label.toUpperCase(Locale.US) + "  ·  " + frameRatio + "  ·  " + (isVideo ? "VIDEO" : "PHOTO"));
+        String currentLabel = selected == ColorLooks.Look.CANON50
+            ? "CANON R5 II · 50mm LOOK"
+            : selected.label.toUpperCase(Locale.US);
+        info.setText(currentLabel + "  ·  " + frameRatio + "  ·  " + (isVideo ? "VIDEO" : "PHOTO"));
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
     }
 

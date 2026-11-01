@@ -16,6 +16,7 @@ public final class ColorLooks {
         LUXURY("Luxury Night", "딥 블랙 · 웜 라이트"),
         SOFT("Soft Hotel", "부드러운 조명 · 자연스러운 피부"),
         CINEMA("City Noir", "차가운 야경 · 깊은 대비"),
+        CANON50("Canon R5 II · 50mm", "자연스러운 피부톤 · 부드러운 하이라이트"),
         ORIGINAL("Original", "효과 없는 원본");
         public final String label;
         public final String hint;
@@ -47,6 +48,7 @@ public final class ColorLooks {
 
     private static float[] grade(Look look, float r, float g, float b) {
         if (look == Look.ORIGINAL) return new float[] {r, g, b};
+        if (look == Look.CANON50) return gradeCanon50(r, g, b);
 
         // Linear-domain luminance approximation; Media3's SDR input is linear BT.709.
         float lum = clip(.2126f * r + .7152f * g + .0722f * b, 0, 1);
@@ -80,6 +82,62 @@ public final class ColorLooks {
         }
         // Subtle luminance-dependent highlight compression to reduce glare.
         return new float[] {clip(r, 0, 1), clip(g, 0, 1), clip(b, 0, 1)};
+    }
+
+    /**
+     * Creative Canon R5 Mark II / RF50 F1.8-inspired SDR look.
+     *
+     * Designed from Canon's published Standard and Portrait picture-style goals:
+     * natural warm skin, moderate local-looking contrast and gentle highlights.
+     * NOT an extracted Canon camera profile, official Picture Style, or optical
+     * f/1.8 depth-of-field simulation. A 3D LUT cannot synthesize lens bokeh.
+     * The LUT is applied to photo, video and live preview identically.
+     */
+    private static float[] gradeCanon50(float r, float g, float b) {
+        // Use input luminance for scene-dependent coloration, avoiding a harsh
+        // global warm tint that would yellow neutral walls and white clothing.
+        final float originalLum = clip(.2126f * r + .7152f * g + .0722f * b, 0f, 1f);
+        final float skinWarm = smoothstep(.012f, .105f, r - g)
+                * smoothstep(.006f, .095f, g - b)
+                * smoothstep(.08f, .34f, originalLum)
+                * (1f - smoothstep(.74f, .97f, originalLum));
+        final float highlight = smoothstep(.44f, .91f, originalLum);
+        final float shadow = 1f - smoothstep(.05f, .35f, originalLum);
+        // Keep natural chroma: more saturated than the dark Luxury Night look,
+        // still avoiding aggressive smartphone HDR saturation.
+        final float saturation = .965f;
+        r = originalLum + (r - originalLum) * saturation;
+        g = originalLum + (g - originalLum) * saturation;
+        b = originalLum + (b - originalLum) * saturation;
+
+        r = canonTone(r);
+        g = canonTone(g);
+        b = canonTone(b);
+
+        // Subtle skin warmth and natural pastel-orange highlights.
+        r += .014f * skinWarm + .004f * highlight;
+        g += .005f * skinWarm + .001f * highlight;
+        b -= .011f * skinWarm + .003f * highlight;
+
+        // Prevent blue-green tinting in neutral dark areas. A mild lift helps
+        // retain detail without flattening the deepest blacks.
+        r += .002f * shadow;
+        g += .002f * shadow;
+        b += .003f * shadow;
+
+        // Restrained foliage greens and fluorescent greens.
+        float greenDominance = clip((g - .5f * (r + b)) * 4f, 0f, 1f);
+        g -= .010f * greenDominance;
+        return new float[] {clip(r, 0f, 1f), clip(g, 0f, 1f), clip(b, 0f, 1f)};
+    }
+
+    private static float canonTone(float v) {
+        float x = clip((v - .5f) * 1.045f + .5f, 0f, 1f);
+        // Modest midtone lift, then rounded specular roll-off to keep skin and
+        // light sources smooth rather than abruptly clipped.
+        x += .015f * x * (1f - x);
+        x -= .027f * smoothstep(.70f, 1f, x);
+        return clip(x, 0f, 1f);
     }
 
     private static float curve(float v, float exposure, float gamma, float contrast) {

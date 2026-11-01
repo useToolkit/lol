@@ -1,5 +1,17 @@
 # I photo — 갤럭시 전용 시네마틱 카메라
 
+## v1.7.0 — Canon EOS R5 Mark II + RF50mm F1.8 STM-inspired Look
+- 다섯 번째 필터 `Canon` 추가: Canon EOS R5 Mark II Picture Style(Standard/Portrait)의 일반적 특징을 참고한 개인용 **창작 LUT**.
+- 자연스러운 피부톤과 부드러운 주황 계열 색상, 적당한 채도·대비, 하이라이트의 완만한 톤 변화를 적용.
+- Media3Effect와 기존 17³ LUT 처리 경로로 사진·동영상·실시간 미리보기 모두 동일한 톤 적용.
+- 촬영화면 아래 필터 바에서 `Canon`을 탭해 선택; 앱을 다시 실행해도 마지막 선택 필터 유지.
+- 기존 Luxury / Soft / Noir / Original 색상 연산에는 변경 없음. AE/AF 센서 고정 및 사진·영상 사용 로직 유지.
+- 광학적 50mm 화각과 F1.8 심도·원형 보케, Canon의 센서·DSP·RAW 현상 결과를 그대로 복제하지는 않음.
+- 원본 갤럭시 사진과 실제 Canon R5 II 같은 장면 비교·컬러차트 없이 전문 프로파일의 완전한 일치를 보장할 수 없음.
+- Canon® 명칭은 참고한 카메라 모델 식별용이며 공식 제조사 인증/제휴가 아닙니다.
+- 참고: https://cam.start.canon/en/C017/manual/html/UG-03_Shooting-1_0110.html
+- 참고: https://files.canon-europe.com/files/webcontent/rf-lens-world/features/rf-lineup/index.html
+
 ## v1.6.0 — 실측 프레임 기반 AF + 고정 센서 노출
 - 기존 AE_LOCK 명령만 보내던 로직을 변경. ProcessCameraProvider + UseCaseGroup + Camera2Interop CaptureCallback로 매 프레임의 SENSOR_SENSITIVITY(ISO), SENSOR_EXPOSURE_TIME(셔터), AE_MODE를 수집합니다.
 - AF 지점에서 초점 수렴 후 그때의 ISO와 셔터 시간을 저장합니다. MANUAL_SENSOR 지원 갤럭시는 AE_MODE_OFF + SENSOR_SENSITIVITY + SENSOR_EXPOSURE_TIME 요청을 영상 전체 반복 요청으로 고정합니다.
@@ -20,7 +32,7 @@
 - 외부 서버, 광고 SDK 및 수집/분석 SDK 없음 (현재 앱 소스/매니페스트 기준).
 - Release 서명키: GitHub Actions Secrets 네 가지가 설정되어 있을 경우 사용자 키를 사용.
   Secrets가 없으면 Actions 실행 중 임시 키로 서명되며, 이는 **이후 버전 덮어쓰기를 보장하지 않습니다**. 임시 키는 업로드하지 않습니다.
-- 새 버전 APK: [I photo v1.5.0 Release 직접 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.6.0-release.apk)
+- 새 버전 APK: [I photo v1.5.0 Release 직접 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.7.0-release.apk)
 - **삼성 피싱앱 위험 경고를 회피/해제하거나 보안 심사를 우회하지 않습니다.** 삼성은 공식 스토어 외 설치, 설치 맥락, 권한 등의 신호를 사용할 수 있어 경고는 재발할 수 있습니다. 삼성멤버스 오탐 검토 또는 공식 스토어 배포가 필요할 수 있습니다.
 
 ### 개인 서명키를 고정해 업데이트 설치하려면
@@ -41,7 +53,7 @@ GitHub 저장소 Settings > Secrets and variables > Actions의 Repository secret
 
 ## 설치하기
 
-- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.6.0-release.apk)** (CI 빌드 성공 후 활성화)
+- **[APK 바로 다운로드](https://github.com/useToolkit/lol/raw/refs/heads/i-photo-apk/I-photo-v1.7.0-release.apk)** (CI 빌드 성공 후 활성화)
 - [GitHub Actions 설치파일](https://github.com/useToolkit/lol/actions/workflows/android.yml?query=branch%3Ai-photo) → 최신 Build I photo APK → Artifacts → I-photo-APK
 - 휴대폰 다운로드 후 APK 열기 → '이 출처의 앱 설치 허용' → 설치 → 카메라/마이크 권한 허용.
 
