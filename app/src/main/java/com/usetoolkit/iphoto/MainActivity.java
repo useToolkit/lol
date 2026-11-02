@@ -274,6 +274,15 @@ public final class MainActivity extends ComponentActivity {
         photoQualityMode=getPreferences(MODE_PRIVATE).getString("photo_quality_mode","MAX");
         if(!photoQualityMode.equals("MAX") && !photoQualityMode.equals("LOOK"))
             photoQualityMode="MAX";
+        // One-time migration: v2.2.7 forced users to choose between maximum
+        // pixels and color. v2.2.8 supports both, so use MAX as default on
+        // upgrade once; subsequent manual choices are persisted unchanged.
+        if(!getPreferences(MODE_PRIVATE).getBoolean("max_lut_228_migrated",false)){
+            photoQualityMode="MAX";
+            getPreferences(MODE_PRIVATE).edit()
+                .putString("photo_quality_mode","MAX")
+                .putBoolean("max_lut_228_migrated",true).apply();
+        }
         portraitBokehRequested=getPreferences(MODE_PRIVATE).getBoolean("portrait_bokeh",false);
         videoQualitySetting=getPreferences(MODE_PRIVATE).getString("video_quality","FHD");
         if(!videoQualitySetting.equals("UHD")&&!videoQualitySetting.equals("FHD")&&
