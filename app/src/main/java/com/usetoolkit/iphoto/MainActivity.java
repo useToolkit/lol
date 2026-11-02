@@ -1469,9 +1469,8 @@ public final class MainActivity extends ComponentActivity {
 
     private void updateFilterShortcut(){
         if(filterShortcut==null)return;
-        ColorLooks.Look actual=(!isVideo &&
-            photoQualityMode.equals("MAX") && !portraitBokehActive)?
-            ColorLooks.Look.ORIGINAL:selected;
+        // The MAX JPEG path now applies the selected LUT after capture.
+        ColorLooks.Look actual=selected;
         filterShortcut.setText(lookInitial(actual));
         filterShortcut.setBackground(filterCircleBackground(actual,true));
         filterShortcut.setTextColor(swatchTextColor(actual));
