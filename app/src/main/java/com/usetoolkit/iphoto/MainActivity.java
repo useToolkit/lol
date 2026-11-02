@@ -12,6 +12,7 @@ import android.animation.AnimatorListenerAdapter;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CaptureResult;
@@ -115,6 +116,7 @@ public final class MainActivity extends ComponentActivity {
     private boolean photoOnlyFallback = false;
     private String photoQualityMode = "MAX";
     private boolean photoHighResolutionFallback = false;
+    private boolean skipUltraOnce = false;
     private String lastSavedPhotoDetail = "";
     private boolean destroyed = false;
     private int previewRetries = 0;
@@ -1163,6 +1165,13 @@ public final class MainActivity extends ComponentActivity {
         plp.topMargin=dp(8);
         panel.addView(photoQualityRow,plp);
         photoQualityRow.setOnClickListener(v->{dialog.dismiss();showPhotoQualityPicker();});
+        TextView resolutionCheckRow=label("카메라 실제 지원 화소 확인",14,WHITE,Typeface.BOLD);
+        resolutionCheckRow.setPadding(dp(16),0,dp(16),0);
+        resolutionCheckRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams rcp=new LinearLayout.LayoutParams(-1,dp(48));
+        rcp.topMargin=dp(8);
+        panel.addView(resolutionCheckRow,rcp);
+        resolutionCheckRow.setOnClickListener(v->{dialog.dismiss();showResolutionDiagnostics();});
 
         TextView qualityRow = label("영상 화질 · "+videoQualitySetting+" / "+
             videoFpsSetting+"fps",14,WHITE,Typeface.BOLD);
@@ -1825,8 +1834,144 @@ public final class MainActivity extends ComponentActivity {
         } else takePhoto();
     }
 
+    /** Show hardware-advertised JPEG sizes, not the sensor's marketed pixel count. */
+    private void showResolutionDiagnostics() {
+        String report;
+        try {
+            CameraManager manager=(CameraManager)getSystemService(CAMERA_SERVICE);
+            CameraInfo cameraInfo=boundCamera!=null
+                ?boundCamera.getCameraInfo()
+                : (isFront?CameraSelector.DEFAULT_FRONT_CAMERA
+                    :CameraSelector.DEFAULT_BACK_CAMERA)
+                    .filter(cameraProvider.getAvailableCameraInfos()).get(0);
+            String cameraId=Camera2CameraInfo.from(cameraInfo).getCameraId();
+            report=UltraResolutionCapture.diagnostics(manager,cameraId);
+            if(imageCapture!=null && imageCapture.getResolutionInfo()!=null)
+                report+="\\n현재 CameraX JPEG 출력: "
+                    +imageCapture.getResolutionInfo().getResolution();
+        } catch (Exception e) {
+            report="카메라 진단 불가: "+e.getClass().getSimpleName();
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("실제 카메라 지원 해상도")
+            .setMessage(report)
+            .setPositiveButton("확인",null).show();
+    }
+
+    /** 
+     * CameraX's highest size is not necessarily the sensor's MAXIMUM_RESOLUTION mode.
+     * Temporarily release CameraX and perform a direct still capture only when a
+     * strictly larger public Camera2 JPEG output exists. On error, return to CameraX.
+     */
+    private boolean tryUltraPhoto() {
+        if(busy || isVideo || isFront || flash || portraitBokehActive || focusLocked ||
+            !photoQualityMode.equals("MAX") || cameraProvider==null ||
+            boundCamera==null || imageCapture==null ||
+            cameraZoom<0.985f || cameraZoom>1.015f) return false;
+
+        final CameraManager manager=(CameraManager)getSystemService(CAMERA_SERVICE);
+        final UltraResolutionCapture.Spec spec;
+        try {
+            String cameraId=Camera2CameraInfo.from(boundCamera.getCameraInfo()).getCameraId();
+            spec=UltraResolutionCapture.inspect(manager,cameraId);
+            if(spec==null || spec.pixels()<=15_000_000L)return false;
+            androidx.camera.core.ResolutionInfo configured=imageCapture.getResolutionInfo();
+            if(configured!=null) {
+                android.util.Size size=configured.getResolution();
+                if(spec.pixels()<=((long)size.getWidth()*size.getHeight()*1.15d))
+                    return false;
+            }
+        } catch (Exception e) {
+            Log.w(TAG,"Camera2 full resolution capability not available",e);
+            return false;
+        }
+
+        int displayDegrees;
+        switch(getWindowManager().getDefaultDisplay().getRotation()) {
+            case android.view.Surface.ROTATION_90: displayDegrees=90; break;
+            case android.view.Surface.ROTATION_180: displayDegrees=180; break;
+            case android.view.Surface.ROTATION_270: displayDegrees=270; break;
+            default: displayDegrees=0;
+        }
+        int sensorDegrees=90;
+        try {
+            Integer d=manager.getCameraCharacteristics(spec.cameraId)
+                .get(CameraCharacteristics.SENSOR_ORIENTATION);
+            if(d!=null)sensorDegrees=d;
+        }catch(Exception e){Log.w(TAG,"Sensor orientation lookup failed",e);}
+        int jpegDegrees=(sensorDegrees-displayDegrees+360)%360;
+        final String requestedRatio=frameRatio;
+        final ColorLooks.Look shotLook=selected;
+        final ColorLooks.Scene shotScene=sceneResolved;
+        final float shotIntensity=intensity;
+
+        busy=true;
+        capture.setAlpha(.55f);
+        showMessage("센서 고화소 촬영 · "+PhotoResolutionInfo.megapixelLabel(
+            spec.jpegSize.getWidth(),spec.jpegSize.getHeight()));
+        try {
+            cameraProvider.unbindAll();
+            boundCamera=null;
+            previewUseCase=null;
+            imageCapture=null;
+            // Give CameraX a moment to close before opening the same logical ID.
+            handler.postDelayed(()->UltraResolutionCapture.capture(
+                getApplicationContext(),manager,spec,jpegDegrees,(uri,error)->
+                runOnUiThread(()->{
+                    if(destroyed)return;
+                    bindCameraUseCases();
+                    if(uri==null){
+                        busy=false;
+                        capture.setAlpha(1f);
+                        Log.w(TAG,"Ultra photo unavailable: "+error);
+                        showMessage("고화소 촬영 미지원 · 기본 촬영으로 전환: "+error);
+                        if(imageCapture!=null){
+                            skipUltraOnce=true;
+                            takePhoto();
+                        }
+                        return;
+                    }
+                    lastMedia=uri;
+                    boolean needsProcessing=!requestedRatio.equals("4:3") ||
+                        (shotLook!=ColorLooks.Look.ORIGINAL && shotIntensity>0f);
+                    if(!needsProcessing){
+                        busy=false;
+                        capture.setAlpha(1f);
+                        verifySavedPhotoResolution(uri);
+                        return;
+                    }
+                    showMessage("고화소 촬영 완료 · 원본 화소 유지 보정 중");
+                    new Thread(()->{
+                        FullResolutionPhotoProcessor.Result outcome=
+                            UltraPhotoProcessor.apply(getApplicationContext(),uri,
+                                requestedRatio,shotLook,shotScene,shotIntensity);
+                        runOnUiThread(()->{
+                            busy=false;
+                            if(destroyed)return;
+                            capture.setAlpha(1f);
+                            lastMedia=outcome.uri==null?uri:outcome.uri;
+                            if(outcome.width>0 && outcome.height>0)
+                                lastSavedPhotoDetail=PhotoResolutionInfo.megapixelLabel(
+                                    outcome.width,outcome.height);
+                            setInfo();
+                            showMessage(outcome.message);
+                        });
+                    },"IPhoto-Ultra-Color").start();
+                })),250L);
+            return true;
+        } catch (Exception error) {
+            Log.e(TAG,"Cannot hand camera to full-resolution pipeline",error);
+            busy=false;
+            capture.setAlpha(1f);
+            bindCameraUseCases();
+            return false;
+        }
+    }
+
     private void takePhoto() {
         if (busy) return;
+        if(!skipUltraOnce && tryUltraPhoto())return;
+        skipUltraOnce=false;
         busy = true;
         capture.setAlpha(.55f);
         final boolean postProcess=photoQualityMode.equals("MAX") &&
