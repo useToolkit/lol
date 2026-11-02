@@ -1821,6 +1821,12 @@ public final class MainActivity extends ComponentActivity {
         if (busy) return;
         busy = true;
         capture.setAlpha(.55f);
+        final boolean postProcess=photoQualityMode.equals("MAX") &&
+            !portraitBokehActive && selected!=ColorLooks.Look.ORIGINAL &&
+            intensity>0f;
+        final ColorLooks.Look shotLook=selected;
+        final ColorLooks.Scene shotScene=sceneResolved;
+        final float shotIntensity=intensity;
         ContentValues values = new ContentValues();
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, mediaName("jpg"));
         values.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
@@ -1830,11 +1836,36 @@ public final class MainActivity extends ComponentActivity {
         try {
             imageCapture.takePicture(options, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
                 @Override public void onImageSaved(ImageCapture.OutputFileResults result) {
-                    busy = false;
-                    capture.setAlpha(1f);
-                    lastMedia = result.getSavedUri();
-                    if(lastMedia!=null)verifySavedPhotoResolution(lastMedia);
-                    else showMessage("사진 저장 완료 · 저장된 파일의 해상도는 확인하지 못했습니다.");
+                    lastMedia=result.getSavedUri();
+                    if(lastMedia==null){
+                        busy=false;capture.setAlpha(1f);
+                        showMessage("사진이 저장됐지만 파일 주소를 확인할 수 없습니다.");
+                        return;
+                    }
+                    if(!postProcess){
+                        busy=false;capture.setAlpha(1f);
+                        verifySavedPhotoResolution(lastMedia);
+                        return;
+                    }
+                    final Uri source=lastMedia;
+                    showMessage("최고 화소 촬영 완료 · 색감 적용 중");
+                    new Thread(()->{
+                        FullResolutionPhotoProcessor.Result outcome=
+                            FullResolutionPhotoProcessor.apply(
+                                getApplicationContext(),source,
+                                shotLook,shotScene,shotIntensity);
+                        runOnUiThread(()->{
+                            busy=false;
+                            if(destroyed)return;
+                            capture.setAlpha(1f);
+                            lastMedia=outcome.uri==null?source:outcome.uri;
+                            if(outcome.width>0 && outcome.height>0)
+                                lastSavedPhotoDetail=PhotoResolutionInfo.megapixelLabel(
+                                    outcome.width,outcome.height);
+                            setInfo();
+                            showMessage(outcome.message);
+                        });
+                    },"IPhoto-FullResolutionColor").start();
                 }
                 @Override public void onError(ImageCaptureException exception) {
                     busy = false;
