@@ -1,0 +1,19 @@
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): false
+Verified using v3 scheme (APK Signature Scheme v3): true
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+Signer #1 certificate DN: CN=I photo Personal Camera, OU=Personal, O=I photo, C=KR
+Signer #1 certificate SHA-256 digest: 1beb7b4793d2d5dbcde2afa193c2f511b51b6f79385e831c76b01510fe44a1eb
+Signer #1 certificate SHA-1 digest: 67d9e4ab59a6f888674fabe71d0f1060b60e78be
+Signer #1 certificate MD5 digest: 8be84caac77239d0bba65df9c2487653
+Signer #1 key algorithm: RSA
+Signer #1 key size (bits): 3072
+Signer #1 public key SHA-256 digest: 8c5affdfbfba48d399326e086e6d841ba3228aa5e482bcd8bb85109bc5aed0a8
+Signer #1 public key SHA-1 digest: 053e437104b46dc710a9d53de579cb782c49d313
+Signer #1 public key MD5 digest: 25b7713b4d0aa48a8ee5252357cf9c88
+
+Signing method: one-time release key (reinstall for future updates)
