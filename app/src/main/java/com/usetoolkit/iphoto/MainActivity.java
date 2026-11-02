@@ -5,6 +5,7 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
+import android.graphics.BitmapFactory;
 import android.animation.ValueAnimator;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -58,6 +59,8 @@ import androidx.camera.core.FocusMeteringResult;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
+import androidx.camera.core.resolutionselector.ResolutionSelector;
+import androidx.camera.core.resolutionselector.ResolutionStrategy;
 import androidx.camera.core.ExposureState;
 import androidx.camera.media3.effect.Media3Effect;
 import androidx.camera.video.FallbackStrategy;
@@ -90,6 +93,7 @@ import java.text.SimpleDateFormat;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Locale;
+import java.io.InputStream;
 
 /** I photo - on-device photo/video capture with a shared GPU-based 3D LUT. */
 @androidx.annotation.OptIn(markerClass = androidx.camera.camera2.interop.ExperimentalCamera2Interop.class)
@@ -109,6 +113,9 @@ public final class MainActivity extends ComponentActivity {
     private volatile boolean lockWarningPosted = false;
     private boolean filterFallback = false;
     private boolean photoOnlyFallback = false;
+    private String photoQualityMode = "MAX";
+    private boolean photoHighResolutionFallback = false;
+    private String lastSavedPhotoDetail = "";
     private boolean destroyed = false;
     private int previewRetries = 0;
     // Explicit CameraX UseCaseGroup gives us per-frame Camera2 metadata that
@@ -262,6 +269,9 @@ public final class MainActivity extends ComponentActivity {
         // the actual status/navigation/cutout safe area.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         frameRatio = getPreferences(MODE_PRIVATE).getString("capture_ratio", "9:16");
+        photoQualityMode=getPreferences(MODE_PRIVATE).getString("photo_quality_mode","MAX");
+        if(!photoQualityMode.equals("MAX") && !photoQualityMode.equals("LOOK"))
+            photoQualityMode="MAX";
         portraitBokehRequested=getPreferences(MODE_PRIVATE).getBoolean("portrait_bokeh",false);
         videoQualitySetting=getPreferences(MODE_PRIVATE).getString("video_quality","FHD");
         if(!videoQualitySetting.equals("UHD")&&!videoQualitySetting.equals("FHD")&&
@@ -413,7 +423,8 @@ public final class MainActivity extends ComponentActivity {
                         Preview bokehPreview=new Preview.Builder().build();
                         bokehPreview.setSurfaceProvider(preview.getSurfaceProvider());
                         ImageCapture bokehPhoto=new ImageCapture.Builder()
-                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
+                            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                            .setJpegQuality(100).build();
                         bokehPhoto.setFlashMode(flash ?
                             ImageCapture.FLASH_MODE_ON:ImageCapture.FLASH_MODE_OFF);
                         CameraSelector bokehSelector=extensionsManager.getExtensionEnabledCameraSelector(
@@ -468,7 +479,8 @@ public final class MainActivity extends ComponentActivity {
                 earlyVideoCaps.isQualitySupported(Quality.HD,DynamicRange.SDR));
             int predictedFps=videoCompatibilityFallback?30:videoFpsSetting;
             StabilizationPlan stabPlan=StabilizationPlan.select(stabilizationMode,
-                !photoOnlyFallback && earlyVideoCaps.isStabilizationSupported(),
+                isVideo && !photoOnlyFallback &&
+                    earlyVideoCaps.isStabilizationSupported(),
                 previewStabCapable,opticalStabilizationAvailable,
                 predictedQuality,predictedFps);
             Preview.Builder pb = new Preview.Builder();
@@ -511,12 +523,33 @@ public final class MainActivity extends ComponentActivity {
                 });
             previewUseCase = pb.build();
             previewUseCase.setSurfaceProvider(preview.getSurfaceProvider());
-            imageCapture = new ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
-            imageCapture.setFlashMode(flash ? ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
+            // Still photography runs without concurrent VideoCapture.
+            // MAX requests camera high-resolution JPEG outputs without Media3
+            // ImageCapture effects, avoiding downscaled effect render targets.
             UseCaseGroup.Builder group = new UseCaseGroup.Builder()
-                .addUseCase(previewUseCase).addUseCase(imageCapture);
-            if (!photoOnlyFallback) {
+                .addUseCase(previewUseCase);
+            if(!isVideo){
+                ResolutionSelector resolution=new ResolutionSelector.Builder()
+                    .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
+                    .setAllowedResolutionMode(
+                        photoQualityMode.equals("MAX") && !photoHighResolutionFallback ?
+                        ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE :
+                        ResolutionSelector.PREFER_CAPTURE_RATE_OVER_HIGHER_RESOLUTION)
+                    .build();
+                imageCapture=new ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setJpegQuality(100)
+                    .setResolutionSelector(resolution).build();
+                imageCapture.setFlashMode(flash ?
+                    ImageCapture.FLASH_MODE_ON : ImageCapture.FLASH_MODE_OFF);
+                group.addUseCase(imageCapture);
+                videoRecorder=null;videoCapture=null;
+                effectiveStabilization=false;
+                previewStabilizationRequested=false;
+            }else{
+                imageCapture=null;
+            }
+            if (isVideo && !photoOnlyFallback) {
                 VideoCapabilities caps=Recorder.getVideoCapabilities(selectedInfo);
                 boolean uhd=caps.isQualitySupported(Quality.UHD,DynamicRange.SDR);
                 boolean fhd=caps.isQualitySupported(Quality.FHD,DynamicRange.SDR);
@@ -562,7 +595,8 @@ public final class MainActivity extends ComponentActivity {
                 effectiveStabilization=false;
                 previewStabilizationRequested=false;
             }
-            if (!filterFallback) group.addEffect(media3);
+            if(!filterFallback && (isVideo || photoQualityMode.equals("LOOK")))
+                group.addEffect(media3);
             ViewPort vp = preview.getViewPort();
             if (vp != null) group.setViewPort(vp);
             boundCamera = cameraProvider.bindToLifecycle(this,
@@ -579,20 +613,29 @@ public final class MainActivity extends ComponentActivity {
             applyOpticalStabilization();
             updateStabilizationBadge();
             handler.postDelayed(() -> setExposureEv(currentEv), 800);
+            if(!isVideo && imageCapture!=null && imageCapture.getResolutionInfo()!=null)
+                Log.i(TAG,"JPEG configured resolution: "+
+                    imageCapture.getResolutionInfo().getResolution());
             setInfo();
         } catch (Exception e) {
             Log.e(TAG, "Camera bind failed", e);
-            if(!videoCompatibilityFallback && !photoOnlyFallback &&
+            if(!isVideo && photoQualityMode.equals("MAX") &&
+                !photoHighResolutionFallback){
+                photoHighResolutionFallback=true;
+                showMessage("초고해상도 지원 제한 · 일반 최고 해상도로 복구합니다.");
+                preview.postDelayed(this::bindCameraUseCases,180);
+            } else if(isVideo && !videoCompatibilityFallback && !photoOnlyFallback &&
                 (videoQualitySetting.equals("UHD") || videoFpsSetting==60 ||
                  stabilizationRequested)) {
                 videoCompatibilityFallback=true;
                 showMessage("고급 영상 조합이 지원되지 않아 1080p·30fps로 복구합니다.");
                 preview.postDelayed(this::bindCameraUseCases,180);
-            } else if(!filterFallback) {
+            } else if(!filterFallback &&
+                (isVideo || photoQualityMode.equals("LOOK"))) {
                 filterFallback=true;
                 showMessage("GPU 효과 연결 실패 · 효과 없이 복구합니다.");
                 preview.postDelayed(this::bindCameraUseCases,180);
-            } else if(!photoOnlyFallback) {
+            } else if(isVideo && !photoOnlyFallback) {
                 photoOnlyFallback=true;
                 showMessage("동영상 연결 불가 · 사진 전용으로 복구합니다.");
                 preview.postDelayed(this::bindCameraUseCases,180);
