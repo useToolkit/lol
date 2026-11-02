@@ -16,6 +16,7 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -228,9 +229,12 @@ public final class MainActivity extends ComponentActivity {
     private float intensity = .82f;
     private TextView info, modePhoto, modeVideo, capture, captureLabel, flashButton, recordTimer;
     private TextView filterShortcut;
-    private View filterPaletteBackdrop;
-    private LinearLayout filterPalettePanel;
+    private FrameLayout filterPalettePanel;
     private boolean filterPaletteVisible = false;
+    private static final int PALETTE_SIZE_DP=170;
+    private static final int PALETTE_ANCHOR_X_DP=143;
+    private static final int PALETTE_ANCHOR_Y_DP=145;
+    private static final int PALETTE_RADIUS_DP=115;
     private SeekBar strengthSeek, exposureSeek;
     private GridOverlay grid;
     private long startedAt;
@@ -850,13 +854,12 @@ public final class MainActivity extends ComponentActivity {
         presetRow.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         LinearLayout.LayoutParams pr = new LinearLayout.LayoutParams(-1, dp(50));
         bottom.addView(presetRow, pr);
-        filterShortcut = label("", 12, WHITE, Typeface.BOLD);
+        filterShortcut = label("", 15, WHITE, Typeface.BOLD);
         filterShortcut.setGravity(Gravity.CENTER);
         filterShortcut.setSingleLine(true);
-        filterShortcut.setPadding(dp(12),0,dp(12),0);
-        filterShortcut.setBackground(shape(0xC51B2026,dp(20),0x88DFCBAC,dp(1)));
+        filterShortcut.setElevation(dp(5));
         LinearLayout.LayoutParams shortcutParams = new LinearLayout.LayoutParams(
-            dp(126),dp(46));
+            dp(42),dp(42));
         shortcutParams.rightMargin=dp(2);
         presetRow.addView(filterShortcut,shortcutParams);
         filterShortcut.setOnClickListener(v->toggleFilterPalette());
@@ -1345,171 +1348,184 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
-    private void updateFilterShortcut() {
-        if(filterShortcut==null)return;
-        filterShortcut.setText("◉  "+shortLookName(selected)+"   ▴");
-        filterShortcut.setContentDescription(
-            "현재 색감 "+selected.label+". 눌러서 필터 팔레트 열기");
-        filterShortcut.setTextColor(WHITE);
+    private String lookInitial(ColorLooks.Look look){
+        if(look==ColorLooks.Look.LUXURY)return "L";
+        if(look==ColorLooks.Look.SOFT)return "S";
+        if(look==ColorLooks.Look.CINEMA)return "N";
+        if(look==ColorLooks.Look.CANON50)return "C";
+        return "O";
     }
 
-    /** One-tap bottom-right palette; never changes the zoom/shutter layout. */
+    private int swatchTextColor(ColorLooks.Look look){
+        return look==ColorLooks.Look.SOFT || look==ColorLooks.Look.ORIGINAL ?
+            INK : WHITE;
+    }
+
+    private GradientDrawable filterCircleBackground(ColorLooks.Look look,
+            boolean selectedCircle){
+        GradientDrawable result=new GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,lookSwatch(look));
+        result.setShape(GradientDrawable.OVAL);
+        result.setStroke(dp(selectedCircle?2:1),
+            selectedCircle?GOLD:0xA0DAD5CE);
+        return result;
+    }
+
+    private void updateFilterShortcut(){
+        if(filterShortcut==null)return;
+        filterShortcut.setText(lookInitial(selected));
+        filterShortcut.setBackground(filterCircleBackground(selected,true));
+        filterShortcut.setTextColor(swatchTextColor(selected));
+        filterShortcut.setContentDescription(
+            "현재 색감 "+selected.label+". 눌러서 작은 원형 필터 팔레트 열기");
+    }
+
+    /**
+     * Dismiss when tapping OUTSIDE the small fan while allowing the touch
+     * to proceed to the camera/zoom/shutter normally. No fullscreen dim layer.
+     */
+    @Override public boolean dispatchTouchEvent(MotionEvent event){
+        if(filterPaletteVisible && event.getActionMasked()==MotionEvent.ACTION_DOWN){
+            int x=Math.round(event.getRawX()),y=Math.round(event.getRawY());
+            Rect bounds=new Rect();
+            boolean inside=false;
+            if(filterShortcut!=null &&
+                filterShortcut.getGlobalVisibleRect(bounds) &&
+                bounds.contains(x,y)) inside=true;
+            if(!inside && filterPalettePanel!=null){
+                for(int i=0;i<filterPalettePanel.getChildCount();i++){
+                    View child=filterPalettePanel.getChildAt(i);
+                    if(child.getGlobalVisibleRect(bounds) && bounds.contains(x,y)){
+                        inside=true;break;
+                    }
+                }
+            }
+            if(!inside)dismissFilterPalette();
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
     private void toggleFilterPalette(){
         if(filterPaletteVisible){dismissFilterPalette();return;}
         if(recording!=null){
-            showMessage("동영상 녹화를 마친 후 필터를 변경할 수 있습니다.");return;
+            showMessage("녹화를 마친 후 필터를 변경할 수 있습니다.");return;
         }
         if(portraitBokehActive){
-            showMessage("인물 보케 촬영에서는 필터를 변경할 수 없습니다.");return;
+            showMessage("인물 보케 촬영에서는 색감 필터를 변경할 수 없습니다.");return;
         }
         if(filterFallback){
-            showMessage("현재 카메라는 GPU 색감 필터가 제한되어 있습니다.");return;
+            showMessage("현재 기기에서 GPU 색감 필터가 제한되어 있습니다.");return;
         }
         openFilterPalette();
     }
 
+    /**
+     * Single-arc palette. Five 42dp circles move from the existing
+     * bottom-right 42dp trigger to positions on a short upper-left fan.
+     * No list, captions, fullscreen dim or zoom/shutter layout shifts.
+     */
     private void openFilterPalette(){
-        if(rootView==null||filterShortcut==null||destroyed)return;
-        if(filterPaletteVisible)return;
+        if(rootView==null || filterShortcut==null || destroyed ||
+            filterPaletteVisible)return;
         filterPaletteVisible=true;
         filterShortcut.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-        View shade=new View(this);
-        shade.setBackgroundColor(0x70050A0D);
-        shade.setAlpha(0f);
-        shade.setClickable(true);
-        shade.setContentDescription("필터 팔레트 닫기");
-        shade.setOnClickListener(v->dismissFilterPalette());
-        filterPaletteBackdrop=shade;
-        rootView.addView(shade,new FrameLayout.LayoutParams(-1,-1));
 
-        LinearLayout panel=new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(12),dp(12),dp(12),dp(13));
-        panel.setBackground(shape(0xF522262A,dp(23),0x66F2E2CC,dp(1)));
-        panel.setElevation(dp(15));
-        panel.setClickable(true);
+        FrameLayout panel=new FrameLayout(this);
+        panel.setClickable(false);
+        panel.setClipChildren(false);
+        panel.setClipToPadding(false);
+        panel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         filterPalettePanel=panel;
-        final int width=Math.min(dp(310),Math.max(dp(230),
-            rootView.getWidth()-dp(32)));
-        FrameLayout.LayoutParams panelLp=new FrameLayout.LayoutParams(width,-2,
+        int size=dp(PALETTE_SIZE_DP);
+        int centerX=dp(PALETTE_ANCHOR_X_DP);
+        int centerY=dp(PALETTE_ANCHOR_Y_DP);
+        final int nodeSize=dp(42);
+        FrameLayout.LayoutParams layout=new FrameLayout.LayoutParams(size,size,
             Gravity.TOP|Gravity.LEFT);
-        rootView.addView(panel,panelLp);
 
-        LinearLayout titleRow=new LinearLayout(this);
-        titleRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title=label("필터 팔레트",16,WHITE,Typeface.BOLD);
-        titleRow.addView(title,new LinearLayout.LayoutParams(0,dp(38),1f));
-        TextView close=label("✕",17,MUTED,Typeface.BOLD);
-        close.setGravity(Gravity.CENTER);
-        close.setContentDescription("필터 팔레트 닫기");
-        titleRow.addView(close,new LinearLayout.LayoutParams(dp(42),dp(42)));
-        close.setOnClickListener(v->dismissFilterPalette());
-        panel.addView(titleRow,new LinearLayout.LayoutParams(-1,dp(42)));
+        // Root gravity-based children respect the safe-area padding.
+        int[] rootXY=new int[2],triggerXY=new int[2];
+        rootView.getLocationInWindow(rootXY);
+        filterShortcut.getLocationInWindow(triggerXY);
+        int triggerCenterX=triggerXY[0]-rootXY[0]+filterShortcut.getWidth()/2;
+        int triggerCenterY=triggerXY[1]-rootXY[1]+filterShortcut.getHeight()/2;
+        int contentW=rootView.getWidth()-rootView.getPaddingLeft()-
+            rootView.getPaddingRight();
+        int contentH=rootView.getHeight()-rootView.getPaddingTop()-
+            rootView.getPaddingBottom();
+        layout.leftMargin=Math.max(0,Math.min(
+            Math.max(0,contentW-size),
+            triggerCenterX-rootView.getPaddingLeft()-centerX));
+        layout.topMargin=Math.max(0,Math.min(
+            Math.max(0,contentH-size),
+            triggerCenterY-rootView.getPaddingTop()-centerY));
+        rootView.addView(panel,layout);
+        panel.setElevation(dp(13));
 
-        TextView caption=label("원하는 색감을 선택하세요",11,MUTED,Typeface.NORMAL);
-        caption.setPadding(dp(8),0,0,0);
-        panel.addView(caption,new LinearLayout.LayoutParams(-1,dp(26)));
-
-        for(ColorLooks.Look look:ColorLooks.Look.values())
-            addFilterPaletteRow(panel,look);
-
-        panel.setAlpha(0f);
-        panel.setScaleX(.94f);
-        panel.setScaleY(.91f);
-        panel.setTranslationY(dp(18));
-        // Anchor the expanding palette just ABOVE the existing filter row,
-        // aligned with its rightmost button. No persistent overlap while closed.
-        panel.post(()->{
-            if(!filterPaletteVisible||filterPalettePanel!=panel)return;
-            int[] rootXY=new int[2],buttonXY=new int[2];
-            rootView.getLocationInWindow(rootXY);
-            filterShortcut.getLocationInWindow(buttonXY);
-            int right=buttonXY[0]-rootXY[0]+filterShortcut.getWidth();
-            int top=buttonXY[1]-rootXY[1]-panel.getHeight()-dp(8);
-            FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)panel.getLayoutParams();
-            int availableW=rootView.getWidth()-rootView.getPaddingLeft()-
-                rootView.getPaddingRight();
-            lp.leftMargin=Math.max(dp(8),
-                Math.min(availableW-panel.getWidth()-dp(8),
-                    right-rootView.getPaddingLeft()-panel.getWidth()));
-            lp.topMargin=Math.max(dp(8),
-                top-rootView.getPaddingTop());
-            panel.setLayoutParams(lp);
-            panel.setPivotX(panel.getWidth());
-            panel.setPivotY(panel.getHeight());
-            shade.animate().alpha(1f).setDuration(185).start();
-            panel.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                .translationY(0f).setDuration(235)
+        ColorLooks.Look[] looks=ColorLooks.Look.values();
+        for(int i=0;i<looks.length;i++){
+            final ColorLooks.Look look=looks[i];
+            RadialPaletteMath.Point point=RadialPaletteMath.point(
+                centerX,centerY,dp(PALETTE_RADIUS_DP),i);
+            final float px=point.x,py=point.y;
+            TextView option=label(lookInitial(look),14,
+                swatchTextColor(look),Typeface.BOLD);
+            option.setGravity(Gravity.CENTER);
+            option.setClickable(true);
+            option.setElevation(dp(4));
+            option.setContentDescription(
+                look.label+(selected==look?" 현재 선택된 필터":" 필터 적용"));
+            option.setBackground(filterCircleBackground(look,selected==look));
+            option.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+            FrameLayout.LayoutParams item=new FrameLayout.LayoutParams(
+                nodeSize,nodeSize,Gravity.TOP|Gravity.LEFT);
+            item.leftMargin=Math.round(px-nodeSize/2f);
+            item.topMargin=Math.round(py-nodeSize/2f);
+            panel.addView(option,item);
+            option.setPivotX(nodeSize/2f);
+            option.setPivotY(nodeSize/2f);
+            option.setTranslationX(centerX-px);
+            option.setTranslationY(centerY-py);
+            option.setAlpha(0f);
+            option.setScaleX(.45f);
+            option.setScaleY(.45f);
+            option.setOnClickListener(v->{
+                if(selected!=look)selectLook(look);
+                dismissFilterPalette();
+            });
+            option.animate().translationX(0f).translationY(0f)
+                .alpha(1f).scaleX(1f).scaleY(1f)
+                .setStartDelay(i*16L).setDuration(195L)
                 .setInterpolator(new DecelerateInterpolator()).start();
-        });
-    }
-
-    private void addFilterPaletteRow(LinearLayout parent,ColorLooks.Look look){
-        LinearLayout option=new LinearLayout(this);
-        option.setGravity(Gravity.CENTER_VERTICAL);
-        option.setPadding(dp(8),0,dp(8),0);
-        boolean active=selected==look;
-        option.setBackground(shape(active?0x665C5140:0x292A3037,
-            dp(15),active?0xA8DFCBAC:0x22FFFFFF,dp(1)));
-
-        View color=new View(this);
-        int[] colors=lookSwatch(look);
-        GradientDrawable swatch=new GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,colors);
-        swatch.setCornerRadius(dp(13));
-        swatch.setStroke(dp(1),0xAAFFFFFF);
-        color.setBackground(swatch);
-        LinearLayout.LayoutParams swatchLp=new LinearLayout.LayoutParams(dp(42),dp(42));
-        swatchLp.rightMargin=dp(12);
-        option.addView(color,swatchLp);
-
-        LinearLayout labels=new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.setGravity(Gravity.CENTER_VERTICAL);
-        TextView name=label(look.label,13,WHITE,Typeface.BOLD);
-        name.setSingleLine(true);
-        labels.addView(name,new LinearLayout.LayoutParams(-1,dp(22)));
-        TextView hint=label(look.hint,10,MUTED,Typeface.NORMAL);
-        hint.setSingleLine(true);
-        hint.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        labels.addView(hint,new LinearLayout.LayoutParams(-1,dp(18)));
-        option.addView(labels,new LinearLayout.LayoutParams(0,-1,1f));
-
-        TextView check=label(active?"✓":"",18,GOLD,Typeface.BOLD);
-        check.setGravity(Gravity.CENTER);
-        option.addView(check,new LinearLayout.LayoutParams(dp(24),-1));
-        option.setContentDescription(look.label+
-            (active?" 선택됨":" 필터 적용"));
-        option.setOnClickListener(v->{
-            if(selected!=look)selectLook(look);
-            dismissFilterPalette();
-        });
-        LinearLayout.LayoutParams opLp=new LinearLayout.LayoutParams(-1,dp(58));
-        opLp.topMargin=dp(5);
-        parent.addView(option,opLp);
+        }
     }
 
     private void dismissFilterPalette(){
         if(!filterPaletteVisible)return;
         filterPaletteVisible=false;
-        final View shade=filterPaletteBackdrop;
-        final LinearLayout panel=filterPalettePanel;
-        filterPaletteBackdrop=null;
+        final FrameLayout panel=filterPalettePanel;
         filterPalettePanel=null;
-        if(shade!=null){
-            shade.animate().cancel();
-            shade.animate().alpha(0f).setDuration(145).withEndAction(()->{
-                if(shade.getParent()==rootView)rootView.removeView(shade);
-            }).start();
+        if(panel==null)return;
+        int centerX=dp(PALETTE_ANCHOR_X_DP);
+        int centerY=dp(PALETTE_ANCHOR_Y_DP);
+        int nodeSize=dp(42);
+        for(int i=0;i<panel.getChildCount();i++){
+            View option=panel.getChildAt(i);
+            option.animate().cancel();
+            FrameLayout.LayoutParams params=
+                (FrameLayout.LayoutParams)option.getLayoutParams();
+            float actualX=params.leftMargin+nodeSize/2f;
+            float actualY=params.topMargin+nodeSize/2f;
+            option.animate().translationX(centerX-actualX)
+                .translationY(centerY-actualY)
+                .alpha(0f).scaleX(.40f).scaleY(.40f)
+                .setStartDelay(i*7L).setDuration(130L).start();
         }
-        if(panel!=null){
-            panel.animate().cancel();
-            panel.animate().alpha(0f).scaleX(.96f).scaleY(.93f)
-                .translationY(dp(12)).setDuration(160)
-                .withEndAction(()->{
-                    if(panel.getParent()==rootView)rootView.removeView(panel);
-                }).start();
-        }
+        // Remove only the dismissed panel. A new palette may be opened
+        // while the closing animation of the old panel is still running.
+        panel.postDelayed(()->{
+            if(panel.getParent()==rootView)rootView.removeView(panel);
+        },180L);
     }
 
     private void selectLook(ColorLooks.Look look) {
@@ -2624,16 +2640,9 @@ public final class MainActivity extends ComponentActivity {
         // animations after this activity's view tree has been destroyed.
         filterPaletteVisible=false;
         if(filterPalettePanel!=null){
-            filterPalettePanel.animate().cancel();
             if(filterPalettePanel.getParent()==rootView)
                 rootView.removeView(filterPalettePanel);
             filterPalettePanel=null;
-        }
-        if(filterPaletteBackdrop!=null){
-            filterPaletteBackdrop.animate().cancel();
-            if(filterPaletteBackdrop.getParent()==rootView)
-                rootView.removeView(filterPaletteBackdrop);
-            filterPaletteBackdrop=null;
         }
         handler.removeCallbacks(tick);
         if (pendingFocusLock != null) handler.removeCallbacks(pendingFocusLock);
