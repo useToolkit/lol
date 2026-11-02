@@ -1155,7 +1155,7 @@ public final class MainActivity extends ComponentActivity {
             if(cameraProvider!=null)bindCameraUseCases();
         });
         TextView photoQualityRow=label("사진 화질 · "+
-            (photoQualityMode.equals("MAX")?"최고 화소 원본":"고화질 + 필터"),
+            (photoQualityMode.equals("MAX")?"최고 화소 + 색감":"고화질 · 빠른 촬영"),
             14,WHITE,Typeface.BOLD);
         photoQualityRow.setPadding(dp(16),0,dp(16),0);
         photoQualityRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
