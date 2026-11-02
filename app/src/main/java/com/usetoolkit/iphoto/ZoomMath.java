@@ -31,6 +31,13 @@ public final class ZoomMath {
         double octaves=deltaPixels/pxPerOctave;
         return limit((float)(initial*Math.pow(2d,octaves)),min,max);
     }
+    /** Fixed visual distance above the shutter independent of strip height. */
+    public static float anchorFromBottom(float height,float bottomInset){
+        return Math.max(0f,height-Math.max(0f,bottomInset));
+    }
+    public static float badgeAbsoluteY(float stripTop,float stripHeight,float inset){
+        return stripTop+anchorFromBottom(stripHeight,inset);
+    }
     public static float[] presets(float min,float max){
         ArrayList<Float> out=new ArrayList<>();
         if(min>0f&&min<.98f && min>.55f)out.add(min);

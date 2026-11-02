@@ -156,7 +156,7 @@ public final class MainActivity extends ComponentActivity {
     private boolean touchMoved = false, touchedLong = false, pinchActive = false;
     private float focusX = -1f, focusY = -1f, touchX, touchY, lastPinchDistance, cameraZoom = 1f;
     private float zoomMin=1f,zoomMax=6f;
-    private LinearLayout zoomRow;
+    private FrameLayout zoomRow;
     private LinearLayout presetControls;
     private FrameLayout rootView;
     private ZoomControlView zoomControl;
@@ -383,6 +383,7 @@ public final class MainActivity extends ComponentActivity {
             zoomHoldActive=false;
             if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
             if(zoomDial!=null)zoomDial.setVisibility(View.GONE);
+            setZoomStripExpanded(false);
             if(presetControls!=null)presetControls.setAlpha(1f);
             detachZoomState();
             cameraProvider.unbindAll();
@@ -864,21 +865,16 @@ public final class MainActivity extends ComponentActivity {
             chip.setOnClickListener(v -> selectLook(look));
         }
 
-        // The entire iPhone-style zoom strip is ONE drag surface.
-        // IMPORTANT: the curved wheel is a FrameLayout overlay, NOT a child of
-        // bottomControls; revealing it must NOT shift controls under the finger.
-        zoomRow=new LinearLayout(this);
-        zoomRow.setGravity(Gravity.CENTER);
+        // The ruler and zoom badge now live in ONE fixed, bottom-anchored
+        // container directly above the shutter. No root-level floating overlay.
+        zoomRow=new FrameLayout(this);
         bottom.addView(zoomRow,new LinearLayout.LayoutParams(-1,dp(54)));
         zoomDial=new ZoomDialView();
         zoomDial.setVisibility(View.GONE);
         zoomDial.setAlpha(0f);
-        zoomDial.setContentDescription("원호 줌 다이얼. 좌우로 드래그하여 연속 확대·축소");
-        FrameLayout.LayoutParams wheelLp=new FrameLayout.LayoutParams(
-            -1,dp(120),Gravity.TOP);
-        wheelLp.topMargin=dp(200);
-        root.addView(zoomDial,wheelLp);
-        zoomDial.setElevation(dp(10));
+        zoomDial.setClickable(false); // Never intercept a zoom drag or camera tap.
+        zoomDial.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        zoomRow.addView(zoomDial,new FrameLayout.LayoutParams(-1,-1,Gravity.BOTTOM));
         rebuildZoomButtons();
 
         LinearLayout shutterRow = new LinearLayout(this);
@@ -2031,17 +2027,17 @@ public final class MainActivity extends ComponentActivity {
      */
     private void rebuildZoomButtons(){
         if(zoomRow==null)return;
-        if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
-        zoomRow.removeAllViews();
         zoomStops=ZoomMath.presets(zoomMin,zoomMax);
-        zoomControl=new ZoomControlView();
-        zoomControl.setContentDescription(
-            "연속 줌 "+zoomLabel(cameraZoom)+
-            ". 배율을 누른 채 좌우로 끌면 바로 확대·축소됩니다. 길게 누르면 원호 다이얼이 나타납니다.");
-        // Show only the CURRENT zoom number until the user scrubs.
-        // Keeping the touch surface 104dp wide makes it easy to hit without
-        // capturing other controls on the bottom camera bar.
-        zoomRow.addView(zoomControl,new LinearLayout.LayoutParams(dp(104),dp(52)));
+        if(zoomControl==null){
+            zoomControl=new ZoomControlView();
+            zoomControl.setContentDescription(
+                "현재 배율. 촬영 버튼 위에서 손가락을 좌우로 움직여 연속 확대·축소");
+            // Keep the same View throughout ZoomState changes, otherwise
+            // rebuilding during dragging steals the current pointer stream.
+            // This chip is always on TOP of the wheel, in the SAME container.
+            zoomRow.addView(zoomControl,new FrameLayout.LayoutParams(
+                dp(104),-1,Gravity.CENTER_HORIZONTAL|Gravity.BOTTOM));
+        }
         updateZoomVisuals();
     }
     private String zoomLabel(float value){
@@ -2155,7 +2151,9 @@ public final class MainActivity extends ComponentActivity {
         @Override protected void onDraw(Canvas c){
             super.onDraw(c);
             float cx=getWidth()/2f;
-            float cy=getHeight()/2f;
+            // The badge stays at a fixed distance ABOVE the shutter even
+            // while the dial container expands upward around the thumb.
+            float cy=ZoomMath.anchorFromBottom(getHeight(),dp(27));
             // One persistent zoom readout. Preset numbers and ticks exist
             // ONLY on the wheel revealed by dragging the current number.
             p.setStyle(Paint.Style.FILL);
@@ -2231,20 +2229,28 @@ public final class MainActivity extends ComponentActivity {
         @Override public boolean performClick(){super.performClick();return true;}
     }
 
-    /** Present as an overlay ABOVE the strip, never shifting the finger target. */
-    private void revealZoomDial(){
-        if(zoomDial==null||rootView==null||zoomRow==null)return;
-        if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
-        if(zoomRow.getHeight()>0){
-            int[] rootXY=new int[2],rowXY=new int[2];
-            rootView.getLocationInWindow(rootXY);
-            zoomRow.getLocationInWindow(rowXY);
-            FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)zoomDial.getLayoutParams();
-            int top=rowXY[1]-rootXY[1]-rootView.getPaddingTop()-dp(127);
-            lp.topMargin=Math.max(dp(76),top);
-            zoomDial.setLayoutParams(lp);
+    /** Expand ONLY the top of the zoom control; the shutter and thumb stay put. */
+    private void setZoomStripExpanded(boolean expanded){
+        if(zoomRow==null)return;
+        android.view.ViewGroup.LayoutParams params=zoomRow.getLayoutParams();
+        int height=dp(expanded?110:54);
+        if(params.height!=height){
+            params.height=height;
+            zoomRow.setLayoutParams(params);
         }
+    }
+
+    /**
+     * The semicircular ruler is now inside the same zoomRow as the number.
+     * It cannot intercept touches outside this region or float above the
+     * filming area at an unrelated screen Y.
+     */
+    private void revealZoomDial(){
+        if(zoomDial==null||zoomRow==null)return;
+        if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
+        setZoomStripExpanded(true);
         if(presetControls!=null)presetControls.setAlpha(.08f);
+        zoomDial.animate().cancel();
         if(zoomDial.getVisibility()!=View.VISIBLE){
             zoomDial.setVisibility(View.VISIBLE);
             zoomDial.setAlpha(0f);
@@ -2252,6 +2258,7 @@ public final class MainActivity extends ComponentActivity {
         }
         zoomDial.invalidate();
     }
+
     private void scheduleHideZoomDial(){
         if(zoomHideTask!=null)handler.removeCallbacks(zoomHideTask);
         zoomHideTask=()->{
@@ -2260,12 +2267,15 @@ public final class MainActivity extends ComponentActivity {
                 zoomDial.animate().alpha(0f).setDuration(170L).withEndAction(()->{
                     if(!zoomGestureActive && !zoomHoldActive){
                         zoomDial.setVisibility(View.GONE);
+                        setZoomStripExpanded(false);
                         if(presetControls!=null)presetControls.setAlpha(1f);
                     }
                 }).start();
-            } else if(presetControls!=null)presetControls.setAlpha(1f);
+            }else{
+                setZoomStripExpanded(false);
+                if(presetControls!=null)presetControls.setAlpha(1f);
+            }
         };
-        // Keep the camera view unobstructed shortly after the finger lifts.
         handler.postDelayed(zoomHideTask,650L);
     }
 
@@ -2290,8 +2300,8 @@ public final class MainActivity extends ComponentActivity {
             final float w=getWidth(),h=getHeight(),center=w/2f;
             if(w<dp(85))return;
             p.setStyle(Paint.Style.FILL);
-            // 40%-opaque charcoal instead of the former 88%-opaque panel.
-            // Scene details remain visible behind the curved zoom animation.
+            // Subtle charcoal drawn ONLY inside the expanded bottom zoom strip.
+            // Unlike 2.2.2 this view is no longer placed over the live preview.
             p.setColor(0x660B0F12);
             c.drawRoundRect(dp(8),dp(3),w-dp(8),h-dp(3),dp(26),dp(26),p);
             p.setTextAlign(Paint.Align.CENTER);
@@ -2339,33 +2349,6 @@ public final class MainActivity extends ComponentActivity {
             // No large caption: the active dial should obscure as little
             // of the live camera preview as possible.
         }
-        @Override public boolean onTouchEvent(MotionEvent event){
-            if(boundCamera==null)return false;
-            switch(event.getActionMasked()){
-                case MotionEvent.ACTION_DOWN:
-                    getParent().requestDisallowInterceptTouchEvent(true);
-                    cancelZoomAnimation();
-                    zoomGestureActive=true;zoomHoldActive=true;
-                    zoomWheelStartX=event.getRawX();
-                    zoomWheelStartRatio=cameraZoom;
-                    revealZoomDial();
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    setZoomDirect(ZoomMath.drag(zoomWheelStartRatio,
-                        event.getRawX()-zoomWheelStartX,dp(155),zoomMin,zoomMax));
-                    return true;
-                case MotionEvent.ACTION_UP:
-                    setZoomDirect(ZoomMath.drag(zoomWheelStartRatio,
-                        event.getRawX()-zoomWheelStartX,dp(155),zoomMin,zoomMax));
-                    performClick();
-                    finishZoomScrub();
-                    return true;
-                case MotionEvent.ACTION_CANCEL:
-                    finishZoomScrub();return true;
-                default:return true;
-            }
-        }
-        @Override public boolean performClick(){super.performClick();return true;}
     }
 
     private void switchCamera() {

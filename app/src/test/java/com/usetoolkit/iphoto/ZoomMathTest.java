@@ -40,4 +40,15 @@ public final class ZoomMathTest {
  @Test public void midpointIsGeometricNotLinear(){
     assertEquals(2f,ZoomMath.ratio(.5f,1f,4f),.001f);
  }
+
+    @org.junit.Test public void thumbNeverMovesWhenWheelExpands(){
+        float collapsed=ZoomMath.badgeAbsoluteY(1000f-54f,54f,27f);
+        float expanded=ZoomMath.badgeAbsoluteY(1000f-110f,110f,27f);
+        org.junit.Assert.assertEquals(973f,collapsed,.001f);
+        org.junit.Assert.assertEquals(collapsed,expanded,.001f);
+    }
+    @org.junit.Test public void dialAndThumbMaintainBottomOffset(){
+        org.junit.Assert.assertEquals(27f,ZoomMath.anchorFromBottom(54f,27f),.001f);
+        org.junit.Assert.assertEquals(83f,ZoomMath.anchorFromBottom(110f,27f),.001f);
+    }
 }
