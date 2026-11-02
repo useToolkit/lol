@@ -60,6 +60,22 @@ public final class ColorLooks {
         return SingleColorLut.createFromCube(cube);
     }
 
+    /**
+     * The same linear-light creative transform used by the CameraX live LUT.
+     * Exposed for matching the saved full-resolution JPEG post-process.
+     */
+    public static float[] gradeLinearPixel(Look look, Scene scene, float strength,
+            float r, float g, float b) {
+        float t=clip(strength,0f,1f);
+        if(look==Look.ORIGINAL || t<=0f)return new float[]{r,g,b};
+        float[] graded=grade(look,r,g,b);
+        int sceneCode=scene==Scene.NIGHT?SceneTone.NIGHT:
+            scene==Scene.PORTRAIT?SceneTone.PORTRAIT:SceneTone.DAY;
+        graded=SceneTone.apply(sceneCode,graded[0],graded[1],graded[2]);
+        return new float[]{mix(r,graded[0],t),mix(g,graded[1],t),
+            mix(b,graded[2],t)};
+    }
+
     private static float[] grade(Look look, float r, float g, float b) {
         if (look == Look.ORIGINAL) return new float[] {r, g, b};
         if (look == Look.CANON50) return gradeCanon50(r, g, b);
