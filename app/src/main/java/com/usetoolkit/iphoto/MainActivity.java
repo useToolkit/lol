@@ -972,7 +972,10 @@ public final class MainActivity extends ComponentActivity {
         modes.addView(modePro,new LinearLayout.LayoutParams(dp(70),dp(44)));
         modePro.setOnClickListener(v->{
             if(recording!=null)return;
+            boolean previousVideoMode=isVideo;
             isVideo=false;proMode=true;
+            if(previousVideoMode && cameraProvider!=null)
+                preview.postDelayed(this::bindCameraUseCases,90);
             modePhoto.setTextColor(MUTED);modeVideo.setTextColor(MUTED);
             modePro.setTextColor(GOLD);
             capture.setBackground(shape(WHITE,dp(34),0,0));
@@ -1115,6 +1118,16 @@ public final class MainActivity extends ComponentActivity {
             bokehRow.setText("인물 배경 흐림 · "+(portraitBokehRequested?"켜짐":"꺼짐"));
             if(cameraProvider!=null)bindCameraUseCases();
         });
+        TextView photoQualityRow=label("사진 화질 · "+
+            (photoQualityMode.equals("MAX")?"최고 화소 원본":"고화질 + 필터"),
+            14,WHITE,Typeface.BOLD);
+        photoQualityRow.setPadding(dp(16),0,dp(16),0);
+        photoQualityRow.setBackground(shape(0xFF2C3238,dp(13),0,0));
+        LinearLayout.LayoutParams plp=new LinearLayout.LayoutParams(-1,dp(48));
+        plp.topMargin=dp(8);
+        panel.addView(photoQualityRow,plp);
+        photoQualityRow.setOnClickListener(v->{dialog.dismiss();showPhotoQualityPicker();});
+
         TextView qualityRow = label("영상 화질 · "+videoQualitySetting+" / "+
             videoFpsSetting+"fps",14,WHITE,Typeface.BOLD);
         qualityRow.setPadding(dp(16),0,dp(16),0);
@@ -1586,8 +1599,19 @@ public final class MainActivity extends ComponentActivity {
         getPreferences(MODE_PRIVATE).edit()
             .putString("selected_look", look.name()).apply();
         updateFilterShortcut();
+        if(!isVideo && photoQualityMode.equals("MAX") &&
+            look!=ColorLooks.Look.ORIGINAL){
+            // The user explicitly chose a creative look. Do not silently
+            // save unfiltered images; switch to filtered photo mode.
+            photoQualityMode="LOOK";
+            photoHighResolutionFallback=false;
+            getPreferences(MODE_PRIVATE).edit().putString("photo_quality_mode","LOOK").apply();
+            showMessage("색감 필터 사진 모드로 전환 · 최고 화소 원본은 설정에서 선택");
+            if(cameraProvider!=null)bindCameraUseCases();
+        }else{
+            applyLook();
+        }
         setInfo();
-        applyLook();
     }
 
     private void applyLook() {
@@ -1609,11 +1633,43 @@ public final class MainActivity extends ComponentActivity {
             : selected.label.toUpperCase(Locale.US);
         String qualityInfo=isVideo?(" · "+effectiveVideoQuality+" "+
             effectiveVideoFps+"fps"+(effectiveStabilization?" · STAB":"")):"";
+        String photoQuality=!isVideo&&!portraitBokehActive?
+            (photoQualityMode.equals("MAX")?" · MAX 원본":" · LOOK 고화질"):"";
         info.setText(currentLabel + " · " + frameRatio +
             (filterFallback?" · 필터 중단":"") +
             (portraitBokehActive?" · 제조사 보케":"") +
-            " · " + (proMode?"PRO":isVideo?"VIDEO":"PHOTO")+qualityInfo);
+            " · " + (proMode?"PRO":isVideo?"VIDEO":"PHOTO")+
+            photoQuality+qualityInfo+
+            (!isVideo&&!lastSavedPhotoDetail.isEmpty()?
+                " · "+lastSavedPhotoDetail:""));
         captureLabel.setText(selected.hint + "  ·  기기 내 처리");
+    }
+
+    /** Explicitly separate original maximum-JPEG output from GPU-filtered photos. */
+    private void showPhotoQualityPicker(){
+        if(recording!=null || busy){
+            showMessage("촬영 중에는 사진 화질을 변경할 수 없습니다.");return;
+        }
+        final String[] items={
+            "최고 화소 원본 · 필터 제외 (권장)",
+            "고화질 + 색감 필터 · 기기에 따라 화소 제한"
+        };
+        int selectedIndex=photoQualityMode.equals("MAX")?0:1;
+        new android.app.AlertDialog.Builder(this).setTitle("사진 저장 화질")
+            .setSingleChoiceItems(items,selectedIndex,(d,index)->{
+                d.dismiss();
+                String wanted=index==0?"MAX":"LOOK";
+                if(!wanted.equals(photoQualityMode)){
+                    photoQualityMode=wanted;
+                    photoHighResolutionFallback=false;
+                    lastSavedPhotoDetail="";
+                    getPreferences(MODE_PRIVATE).edit().putString("photo_quality_mode",wanted).apply();
+                    if(cameraProvider!=null && !isVideo)bindCameraUseCases();
+                    showMessage(wanted.equals("MAX")?
+                        "최고 화소 원본 JPEG · 필터는 저장 사진에 미적용":
+                        "고화질 필터 적용 · 최고 화소는 제한될 수 있습니다.");
+                }
+            }).setNegativeButton("취소",null).show();
     }
 
     private void showVideoSettings() {
@@ -1682,9 +1738,12 @@ public final class MainActivity extends ComponentActivity {
         if (video && photoOnlyFallback) {
             showMessage("이 카메라에서는 사진만 촬영할 수 있습니다.");return;
         }
-        isVideo = video;
-        if(cameraProvider!=null && portraitBokehRequested &&
-            (portraitBokehActive!=(!video && !isFront)))
+        boolean previousVideoMode=isVideo;
+        isVideo=video;
+        if(cameraProvider!=null &&
+            (previousVideoMode!=video ||
+             (portraitBokehRequested &&
+               (portraitBokehActive!=(!video && !isFront)))))
             preview.postDelayed(this::bindCameraUseCases,90);
         proMode=false;
         if(modePro!=null)modePro.setTextColor(MUTED);
@@ -1701,6 +1760,9 @@ public final class MainActivity extends ComponentActivity {
         if (boundCamera == null) { showMessage("카메라를 준비하는 중입니다."); return; }
         if (isVideo && videoRecorder == null) {
             showMessage("동영상 촬영을 지원하지 않는 카메라입니다.");return;
+        }
+        if (!isVideo && imageCapture == null) {
+            showMessage("사진 해상도를 설정 중입니다. 다시 촬영해 주세요.");return;
         }
         if (afAeLockPending) {
             showMessage("센서 잠금 결과를 확인한 뒤 촬영해 주세요.");
@@ -1735,7 +1797,8 @@ public final class MainActivity extends ComponentActivity {
                     busy = false;
                     capture.setAlpha(1f);
                     lastMedia = result.getSavedUri();
-                    showMessage("사진을 갤러리에 저장했습니다.");
+                    if(lastMedia!=null)verifySavedPhotoResolution(lastMedia);
+                    else showMessage("사진 저장 완료 · 저장된 파일의 해상도는 확인하지 못했습니다.");
                 }
                 @Override public void onError(ImageCaptureException exception) {
                     busy = false;
@@ -1752,6 +1815,34 @@ public final class MainActivity extends ComponentActivity {
         }
     }
 
+
+    /** Read the actually saved JPEG pixels without allocating a bitmap. */
+    private void verifySavedPhotoResolution(Uri uri){
+        new Thread(()->{
+            BitmapFactory.Options bounds=new BitmapFactory.Options();
+            bounds.inJustDecodeBounds=true;
+            try(InputStream stream=getContentResolver().openInputStream(uri)){
+                if(stream==null)throw new java.io.IOException("URI unavailable");
+                BitmapFactory.decodeStream(stream,null,bounds);
+                final int w=bounds.outWidth,h=bounds.outHeight;
+                if(w<=0||h<=0)throw new java.io.IOException("No JPEG dimensions");
+                final String detail=PhotoResolutionInfo.describe(w,h);
+                Log.i(TAG,"Saved photo dimensions: "+detail);
+                runOnUiThread(()->{
+                    if(destroyed)return;
+                    lastSavedPhotoDetail=PhotoResolutionInfo.megapixelLabel(w,h);
+                    setInfo();
+                    showMessage("원본 JPG 저장 · "+detail);
+                });
+            }catch(Exception e){
+                Log.w(TAG,"Unable to read saved JPEG dimensions",e);
+                runOnUiThread(()->{
+                    if(!destroyed)
+                        showMessage("사진 저장 완료 · 갤러리 상세정보에서 화소 수 확인");
+                });
+            }
+        },"IPhoto-VerifySavedJpeg").start();
+    }
 
     /** Single tap: autofocus. Long press: hold AF until tap/unlock/camera switch. */
     private void enableFocusGestures() {
@@ -2616,6 +2707,7 @@ public final class MainActivity extends ComponentActivity {
             unlockFocus();
             filterFallback=false;
             photoOnlyFallback=false;
+            photoHighResolutionFallback=false;
             videoCompatibilityFallback=false;
             videoCapabilitiesFallbackNotified=false;
             lastExposureIndex = Integer.MIN_VALUE;
