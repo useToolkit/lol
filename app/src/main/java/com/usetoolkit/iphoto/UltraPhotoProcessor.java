@@ -31,6 +31,7 @@ public final class UltraPhotoProcessor {
         Bitmap bitmap = null;
         BitmapRegionDecoder decoder = null;
         int w = 0, h = 0;
+        int originalW = 0, originalH = 0;
         try {
             BitmapFactory.Options dimensions = new BitmapFactory.Options();
             dimensions.inJustDecodeBounds = true;
@@ -39,6 +40,7 @@ public final class UltraPhotoProcessor {
                 BitmapFactory.decodeStream(input, null, dimensions);
             }
             int originalWidth = dimensions.outWidth, originalHeight = dimensions.outHeight;
+            originalW = originalWidth; originalH = originalHeight;
             if (originalWidth < 1 || originalHeight < 1)
                 throw new java.io.IOException("Source JPEG dimensions missing");
 
@@ -129,11 +131,11 @@ public final class UltraPhotoProcessor {
         } catch (OutOfMemoryError oom) {
             Log.e(TAG, "Insufficient RAM for full-size crop", oom);
             return new FullResolutionPhotoProcessor.Result(source, false,
-                w, h, "원본 보존 · 고화소 색감/크롭 메모리 부족");
+                originalW, originalH, "원본 보존 · 고화소 색감/크롭 메모리 부족");
         } catch (Exception failure) {
             Log.e(TAG, "Ultra crop/filter failed", failure);
             return new FullResolutionPhotoProcessor.Result(source, false,
-                w, h, "원본 보존 · 고화소 크롭/색감 실패: "
+                originalW, originalH, "원본 보존 · 고화소 크롭/색감 실패: "
                     + failure.getClass().getSimpleName());
         } finally {
             if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
