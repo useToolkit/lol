@@ -978,6 +978,7 @@ public final class MainActivity extends ComponentActivity {
                 preview.postDelayed(this::bindCameraUseCases,90);
             modePhoto.setTextColor(MUTED);modeVideo.setTextColor(MUTED);
             modePro.setTextColor(GOLD);
+            updateFilterShortcut();
             capture.setBackground(shape(WHITE,dp(34),0,0));
             if(proTelemetry!=null)proTelemetry.setVisibility(View.VISIBLE);
             showProControls();setInfo();
@@ -1433,11 +1434,14 @@ public final class MainActivity extends ComponentActivity {
 
     private void updateFilterShortcut(){
         if(filterShortcut==null)return;
-        filterShortcut.setText(lookInitial(selected));
-        filterShortcut.setBackground(filterCircleBackground(selected,true));
-        filterShortcut.setTextColor(swatchTextColor(selected));
+        ColorLooks.Look actual=(!isVideo &&
+            photoQualityMode.equals("MAX") && !portraitBokehActive)?
+            ColorLooks.Look.ORIGINAL:selected;
+        filterShortcut.setText(lookInitial(actual));
+        filterShortcut.setBackground(filterCircleBackground(actual,true));
+        filterShortcut.setTextColor(swatchTextColor(actual));
         filterShortcut.setContentDescription(
-            "현재 색감 "+selected.label+". 눌러서 작은 원형 필터 팔레트 열기");
+            "현재 색감 "+actual.label+". 눌러서 작은 원형 필터 팔레트 열기");
     }
 
     /**
@@ -1606,6 +1610,7 @@ public final class MainActivity extends ComponentActivity {
             photoQualityMode="LOOK";
             photoHighResolutionFallback=false;
             getPreferences(MODE_PRIVATE).edit().putString("photo_quality_mode","LOOK").apply();
+            updateFilterShortcut();
             showMessage("색감 필터 사진 모드로 전환 · 최고 화소 원본은 설정에서 선택");
             if(cameraProvider!=null)bindCameraUseCases();
         }else{
@@ -1628,7 +1633,8 @@ public final class MainActivity extends ComponentActivity {
     }
 
     private void setInfo() {
-        String currentLabel = selected == ColorLooks.Look.CANON50
+        String currentLabel = (!isVideo && photoQualityMode.equals("MAX"))?
+            "ORIGINAL" : selected == ColorLooks.Look.CANON50
             ? "CANON R5 II · 50mm LOOK"
             : selected.label.toUpperCase(Locale.US);
         String qualityInfo=isVideo?(" · "+effectiveVideoQuality+" "+
@@ -1664,6 +1670,8 @@ public final class MainActivity extends ComponentActivity {
                     photoHighResolutionFallback=false;
                     lastSavedPhotoDetail="";
                     getPreferences(MODE_PRIVATE).edit().putString("photo_quality_mode",wanted).apply();
+                    updateFilterShortcut();
+                    setInfo();
                     if(cameraProvider!=null && !isVideo)bindCameraUseCases();
                     showMessage(wanted.equals("MAX")?
                         "최고 화소 원본 JPEG · 필터는 저장 사진에 미적용":
@@ -1746,6 +1754,7 @@ public final class MainActivity extends ComponentActivity {
                (portraitBokehActive!=(!video && !isFront)))))
             preview.postDelayed(this::bindCameraUseCases,90);
         proMode=false;
+        updateFilterShortcut();
         if(modePro!=null)modePro.setTextColor(MUTED);
         if(proTelemetry!=null)proTelemetry.setVisibility(View.GONE);
         modePhoto.setTextColor(video ? MUTED : GOLD);
