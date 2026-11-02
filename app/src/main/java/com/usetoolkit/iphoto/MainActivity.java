@@ -203,6 +203,8 @@ public final class MainActivity extends ComponentActivity {
     private float currentEv = -.5f;
     private static final String[] RATIOS = {"4:3", "9:16", "1:1", "3:2"};
     private Media3Effect media3;
+    private Media3Effect photoPreviewEffect;
+    private boolean photoPreviewEffectFallback = false;
     private Recording recording;
     private Uri lastMedia;
     private boolean isVideo = false;
@@ -335,6 +337,21 @@ public final class MainActivity extends ComponentActivity {
                     });
                 });
             media3.setEffects(Collections.singletonList(
+                ColorLooks.generate(selected,intensity,sceneResolved)));
+            // Preview-only effect does NOT consume the high-resolution JPEG
+            // output. The saved MAX photo gets the same LUT AFTER capture.
+            photoPreviewEffect=new Media3Effect(this,CameraEffect.PREVIEW,
+                ContextCompat.getMainExecutor(this), t->{
+                    Log.e(TAG,"Photo preview effect failed",t);
+                    runOnUiThread(()->{
+                        if(destroyed || photoPreviewEffectFallback)return;
+                        photoPreviewEffectFallback=true;
+                        showMessage("미리보기 색감 제한 · 저장 사진에는 필터를 적용합니다.");
+                        if(!isVideo && recording==null)
+                            preview.postDelayed(this::bindCameraUseCases,180);
+                    });
+                });
+            photoPreviewEffect.setEffects(Collections.singletonList(
                 ColorLooks.generate(selected,intensity,sceneResolved)));
             enableFocusGestures();
             ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
@@ -597,6 +614,10 @@ public final class MainActivity extends ComponentActivity {
             }
             if(!filterFallback && (isVideo || photoQualityMode.equals("LOOK")))
                 group.addEffect(media3);
+            else if(!isVideo && photoQualityMode.equals("MAX") &&
+                    !photoPreviewEffectFallback && photoPreviewEffect!=null &&
+                    selected!=ColorLooks.Look.ORIGINAL && intensity>0f)
+                group.addEffect(photoPreviewEffect);
             ViewPort vp = preview.getViewPort();
             if (vp != null) group.setViewPort(vp);
             boundCamera = cameraProvider.bindToLifecycle(this,
@@ -629,6 +650,11 @@ public final class MainActivity extends ComponentActivity {
                  stabilizationRequested)) {
                 videoCompatibilityFallback=true;
                 showMessage("고급 영상 조합이 지원되지 않아 1080p·30fps로 복구합니다.");
+                preview.postDelayed(this::bindCameraUseCases,180);
+            } else if(!isVideo && photoQualityMode.equals("MAX") &&
+                    !photoPreviewEffectFallback){
+                photoPreviewEffectFallback=true;
+                showMessage("고해상도 사진 연결 우선 · 미리보기 색감 없이 저장 시 적용");
                 preview.postDelayed(this::bindCameraUseCases,180);
             } else if(!filterFallback &&
                 (isVideo || photoQualityMode.equals("LOOK"))) {
@@ -1477,8 +1503,8 @@ public final class MainActivity extends ComponentActivity {
         if(portraitBokehActive){
             showMessage("인물 보케 촬영에서는 색감 필터를 변경할 수 없습니다.");return;
         }
-        if(filterFallback){
-            showMessage("현재 기기에서 GPU 색감 필터가 제한되어 있습니다.");return;
+        if(filterFallback && (isVideo || photoQualityMode.equals("LOOK"))){
+            showMessage("현재 기기에서 실시간 GPU 색감이 제한되어 있습니다.");return;
         }
         openFilterPalette();
     }
@@ -1598,49 +1624,50 @@ public final class MainActivity extends ComponentActivity {
             showMessage("제조사 보케 촬영에서는 색감 LUT를 함께 적용할 수 없습니다. 설정에서 보케를 끄세요.");
             return;
         }
-        if (filterFallback) { showMessage("이 기기의 GPU 필터가 지원되지 않습니다."); return; }
+        if (filterFallback && (isVideo || photoQualityMode.equals("LOOK"))) {
+            showMessage("이 기기의 실시간 GPU 필터가 지원되지 않습니다.");return;
+        }
         selected = look;
         getPreferences(MODE_PRIVATE).edit()
             .putString("selected_look", look.name()).apply();
         updateFilterShortcut();
+        // MAX now keeps the high-resolution photo stream AND applies the
+        // selected creative look to every pixel after JPEG capture.
+        applyLook();
         if(!isVideo && photoQualityMode.equals("MAX") &&
-            look!=ColorLooks.Look.ORIGINAL){
-            // The user explicitly chose a creative look. Do not silently
-            // save unfiltered images; switch to filtered photo mode.
-            photoQualityMode="LOOK";
-            photoHighResolutionFallback=false;
-            getPreferences(MODE_PRIVATE).edit().putString("photo_quality_mode","LOOK").apply();
-            updateFilterShortcut();
-            showMessage("색감 필터 사진 모드로 전환 · 최고 화소 원본은 설정에서 선택");
-            if(cameraProvider!=null)bindCameraUseCases();
-        }else{
-            applyLook();
-        }
+            cameraProvider!=null && photoPreviewEffect!=null &&
+            !photoPreviewEffectFallback && !filterFallback)
+            preview.postDelayed(this::bindCameraUseCases,80);
         setInfo();
     }
 
     private void applyLook() {
-        if (media3 == null || filterFallback || portraitBokehActive) return;
+        if(portraitBokehActive)return;
         try {
-            if (selected == ColorLooks.Look.ORIGINAL || intensity == 0f)
-                media3.setEffects(Collections.emptyList());
-            else media3.setEffects(Collections.singletonList(
-                ColorLooks.generate(selected,intensity,sceneResolved)));
-        } catch (Exception e) {
-            Log.e(TAG, "Effect changed failed", e);
-            showMessage("필터 적용 오류");
+            java.util.List<androidx.media3.common.Effect> effects=
+                selected==ColorLooks.Look.ORIGINAL || intensity<=0f ?
+                    Collections.emptyList():
+                    Collections.singletonList(ColorLooks.generate(
+                        selected,intensity,sceneResolved));
+            if(media3!=null && !filterFallback)
+                media3.setEffects(effects);
+            if(photoPreviewEffect!=null && !photoPreviewEffectFallback)
+                photoPreviewEffect.setEffects(effects);
+        }catch(Exception e){
+            Log.e(TAG,"Color LUT generation/apply failed",e);
+            showMessage("색감 미리보기 오류 · 저장 사진에는 색감을 별도로 적용합니다.");
         }
     }
 
     private void setInfo() {
-        String currentLabel = (!isVideo && photoQualityMode.equals("MAX"))?
-            "ORIGINAL" : selected == ColorLooks.Look.CANON50
+        String currentLabel = selected == ColorLooks.Look.CANON50
             ? "CANON R5 II · 50mm LOOK"
             : selected.label.toUpperCase(Locale.US);
         String qualityInfo=isVideo?(" · "+effectiveVideoQuality+" "+
             effectiveVideoFps+"fps"+(effectiveStabilization?" · STAB":"")):"";
         String photoQuality=!isVideo&&!portraitBokehActive?
-            (photoQualityMode.equals("MAX")?" · MAX 원본":" · LOOK 고화질"):"";
+            (photoQualityMode.equals("MAX")?
+                " · MAX 화소+필터":" · LOOK 빠른 촬영"):"";
         info.setText(currentLabel + " · " + frameRatio +
             (filterFallback?" · 필터 중단":"") +
             (portraitBokehActive?" · 제조사 보케":"") +
@@ -1657,8 +1684,8 @@ public final class MainActivity extends ComponentActivity {
             showMessage("촬영 중에는 사진 화질을 변경할 수 없습니다.");return;
         }
         final String[] items={
-            "최고 화소 원본 · 필터 제외 (권장)",
-            "고화질 + 색감 필터 · 기기에 따라 화소 제한"
+            "최고 화소 + 색감 필터 · 촬영 후 전체 픽셀 보정 (권장)",
+            "빠른 촬영 + 색감 필터 · 해상도 제한 가능"
         };
         int selectedIndex=photoQualityMode.equals("MAX")?0:1;
         new android.app.AlertDialog.Builder(this).setTitle("사진 저장 화질")
@@ -1674,8 +1701,8 @@ public final class MainActivity extends ComponentActivity {
                     setInfo();
                     if(cameraProvider!=null && !isVideo)bindCameraUseCases();
                     showMessage(wanted.equals("MAX")?
-                        "최고 화소 원본 JPEG · 필터는 저장 사진에 미적용":
-                        "고화질 필터 적용 · 최고 화소는 제한될 수 있습니다.");
+                        "최고 화소 JPEG에 색감 필터를 후처리합니다.":
+                        "빠른 실시간 색감 촬영 · 해상도는 제한될 수 있습니다.");
                 }
             }).setNegativeButton("취소",null).show();
     }
@@ -2717,6 +2744,7 @@ public final class MainActivity extends ComponentActivity {
             filterFallback=false;
             photoOnlyFallback=false;
             photoHighResolutionFallback=false;
+            photoPreviewEffectFallback=false;
             videoCompatibilityFallback=false;
             videoCapabilitiesFallbackNotified=false;
             lastExposureIndex = Integer.MIN_VALUE;
@@ -2822,6 +2850,7 @@ public final class MainActivity extends ComponentActivity {
         if (recording != null) recording.stop();
         if (cameraProvider != null) cameraProvider.unbindAll();
         if (media3 != null) media3.close();
+        if (photoPreviewEffect != null) photoPreviewEffect.close();
         super.onDestroy();
     }
 
