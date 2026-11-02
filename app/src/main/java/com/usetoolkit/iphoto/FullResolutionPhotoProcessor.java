@@ -153,7 +153,7 @@ public final class FullResolutionPhotoProcessor {
         }
     }
 
-    private static void copyExif(ContentResolver resolver,Uri source,Uri target)
+    static void copyExif(ContentResolver resolver,Uri source,Uri target)
             throws IOException {
         ExifInterface input;
         try(InputStream stream=resolver.openInputStream(source)){
