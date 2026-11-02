@@ -7,8 +7,8 @@ android {
         applicationId 'com.usetoolkit.iphoto'
         minSdk 29
         targetSdk 35
-        versionCode 27
-        versionName '2.2.5'
+        versionCode 28
+        versionName '2.2.6'
     }
     buildTypes {
         debug {

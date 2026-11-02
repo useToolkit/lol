@@ -51,4 +51,32 @@ public final class ZoomMathTest {
         org.junit.Assert.assertEquals(27f,ZoomMath.anchorFromBottom(54f,27f),.001f);
         org.junit.Assert.assertEquals(83f,ZoomMath.anchorFromBottom(110f,27f),.001f);
     }
+    @Test public void fastSwipeReachesBothHardwareBoundsInSingleMotion(){
+        assertEquals(12f,ZoomMath.dragToEdge(1f,135f,135f,1f,12f),0f);
+        assertEquals(1f,ZoomMath.dragToEdge(12f,-135f,135f,1f,12f),0f);
+        assertEquals(.5f,ZoomMath.dragToEdge(3f,-135f,135f,.5f,30f),0f);
+        assertEquals(30f,ZoomMath.dragToEdge(3f,135f,135f,.5f,30f),0f);
+    }
+    @Test public void fastSwipeClampsOvershootAndStartsSmoothly(){
+        assertEquals(1.7f,ZoomMath.dragToEdge(1.7f,0f,135f,1f,30f),0f);
+        assertEquals(30f,ZoomMath.dragToEdge(2f,500f,135f,1f,30f),0f);
+        assertEquals(1f,ZoomMath.dragToEdge(2f,-500f,135f,1f,30f),0f);
+        assertTrue(ZoomMath.dragToEdge(1f,35f,135f,1f,20f)>1f);
+        assertTrue(ZoomMath.dragToEdge(1f,35f,135f,1f,20f)<20f);
+    }
+    @Test public void fastSwipeReversesFromIntermediateZoom(){
+        float start=3.5f;
+        float up=ZoomMath.dragToEdge(start,80f,135f,1f,10f);
+        float down=ZoomMath.dragToEdge(start,-80f,135f,1f,10f);
+        assertTrue(up>start);assertTrue(up<10f);
+        assertTrue(down<start);assertTrue(down>1f);
+    }
+    @Test public void doubleTapTimeAndDistance(){
+        assertTrue(ZoomMath.isDoubleTap(1000L,1200L,3f,2f,300L,45f));
+        assertTrue(ZoomMath.isDoubleTap(1000L,1300L,0f,0f,300L,45f));
+        assertFalse(ZoomMath.isDoubleTap(1000L,1400L,0f,0f,300L,45f));
+        assertFalse(ZoomMath.isDoubleTap(1000L,1200L,50f,0f,300L,45f));
+        assertFalse(ZoomMath.isDoubleTap(0L,1200L,0f,0f,300L,45f));
+        assertFalse(ZoomMath.isDoubleTap(1000L,1200L,Float.NaN,0f,300L,45f));
+    }
 }

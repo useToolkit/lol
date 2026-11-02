@@ -177,6 +177,10 @@ public final class MainActivity extends ComponentActivity {
     private boolean zoomGestureActive=false;
     private Runnable zoomPendingDispatch;
     private float zoomTouchBeginY;
+    private long zoomLastTapAtMs=0L;
+    private float zoomLastTapRawX=0f,zoomLastTapRawY=0f;
+    private static final float ZOOM_EDGE_SWIPE_DP=135f;
+    private static final long ZOOM_DOUBLE_TAP_MS=300L;
     private float zoomWheelStartX,zoomWheelStartRatio;
     private Runnable pendingFocusLock;
     private ExposureSunGuide exposureSunGuide;
@@ -2315,6 +2319,7 @@ public final class MainActivity extends ComponentActivity {
         zoomHoldActive=true;
         zoomTouchMoved=true;
         zoomGestureActive=true;
+        zoomLastTapAtMs=0L;
         cancelZoomAnimation();
         if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
         zoomHoldBaseRatio=cameraZoom; // start from ACTUAL current zoom, no jump
@@ -2325,6 +2330,7 @@ public final class MainActivity extends ComponentActivity {
         if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
         zoomHoldActive=false;
         zoomGestureActive=false;
+        zoomLastTapAtMs=0L;
         flushZoomRequest();
         scheduleHideZoomDial();
     }
@@ -2387,8 +2393,8 @@ public final class MainActivity extends ComponentActivity {
                         zoomTouchMoved=true;
                     }
                     if(zoomHoldActive) {
-                        setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(155),
-                            zoomMin,zoomMax));
+                        setZoomDirect(ZoomMath.dragToEdge(zoomHoldBaseRatio,dx,
+                            dp(ZOOM_EDGE_SWIPE_DP),zoomMin,zoomMax));
                     }
                     return true;
                 }
@@ -2402,18 +2408,35 @@ public final class MainActivity extends ComponentActivity {
                         beginZoomScrub(this);
                     if(zoomHoldActive){
                         float dx=event.getRawX()-zoomTouchBeginX;
-                        setZoomDirect(ZoomMath.drag(zoomHoldBaseRatio,dx,dp(155),
-                            zoomMin,zoomMax));
+                        setZoomDirect(ZoomMath.dragToEdge(zoomHoldBaseRatio,dx,
+                            dp(ZOOM_EDGE_SWIPE_DP),zoomMin,zoomMax));
                         finishZoomScrub();
                     }else if(!zoomTouchMoved){
-                        // A short tap does NOT jump to another preset.
-                        // This persistent single number is a drag handle.
+                        // Two fast, nearby taps on the badge return to 1x.
+                        // Clamp to camera's true range if 1x is not available.
+                        final long now=event.getEventTime();
+                        float rawX=event.getRawX(), rawY=event.getRawY();
+                        boolean doubleTap=ZoomMath.isDoubleTap(
+                            zoomLastTapAtMs,now,
+                            rawX-zoomLastTapRawX,rawY-zoomLastTapRawY,
+                            ZOOM_DOUBLE_TAP_MS,dp(45));
+                        zoomLastTapAtMs=doubleTap?0L:now;
+                        zoomLastTapRawX=rawX;
+                        zoomLastTapRawY=rawY;
                         performClick();
+                        if(doubleTap){
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                            animateZoomTo(ZoomMath.limit(1f,zoomMin,zoomMax));
+                            scheduleHideZoomDial();
+                        }
+                    }else{
+                        zoomLastTapAtMs=0L;
                     }
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     if(zoomHoldTask!=null)handler.removeCallbacks(zoomHoldTask);
                     if(zoomHoldActive)finishZoomScrub();
+                    zoomLastTapAtMs=0L;
                     zoomTouchMoved=false;
                     return true;
                 default:return true;

@@ -31,6 +31,33 @@ public final class ZoomMath {
         double octaves=deltaPixels/pxPerOctave;
         return limit((float)(initial*Math.pow(2d,octaves)),min,max);
     }
+    /**
+     * From any zoom, a swipe of fullSwipePx reaches the maximum on rightward
+     * movement or minimum on leftward movement. Log interpolation avoids the
+     * previous 155px-per-octave problem on high-zoom devices.
+     */
+    public static float dragToEdge(float start,float dx,float fullSwipePx,
+            float min,float max){
+        float from=limit(start,min,max);
+        if(max<=min || !Float.isFinite(dx) || !Float.isFinite(fullSwipePx)
+            || fullSwipePx<=0f)return from;
+        float progress=Math.min(1f,Math.abs(dx)/fullSwipePx);
+        if(progress<=0f)return from;
+        float destination=dx>=0f?max:min;
+        if(progress>=1f)return limit(destination,min,max);
+        return limit((float)(from*Math.exp(Math.log(destination/from)*progress)),min,max);
+    }
+
+    /** Identify two short nearby taps, never a swipe, long press or far tap. */
+    public static boolean isDoubleTap(long firstUp,long secondUp,
+            float deltaX,float deltaY,long timeoutMs,float slopPx){
+        if(firstUp<=0L || secondUp<=firstUp || secondUp-firstUp>timeoutMs ||
+           timeoutMs<=0L || !Float.isFinite(deltaX) ||
+           !Float.isFinite(deltaY) || !Float.isFinite(slopPx) ||
+           slopPx<=0f)return false;
+        return Math.hypot(deltaX,deltaY)<=slopPx;
+    }
+
     /** Fixed visual distance above the shutter independent of strip height. */
     public static float anchorFromBottom(float height,float bottomInset){
         return Math.max(0f,height-Math.max(0f,bottomInset));
