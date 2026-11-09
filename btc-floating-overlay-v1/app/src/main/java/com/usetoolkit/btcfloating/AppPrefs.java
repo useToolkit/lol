@@ -24,6 +24,8 @@ final class AppPrefs {
     private static final String KEY_PANEL_WIDTH = "overlay_panel_width";
     private static final String KEY_POWER_MODE = "power_mode";
     private static final String KEY_MOBILE_SAVER = "mobile_saver";
+    private static final String KEY_CHIP_ENABLED = "chip_enabled";
+    private static final String KEY_CHIP_ONLY = "chip_only";
 
     static final int POWER_REALTIME = 0;
     static final int POWER_BALANCED = 1;
@@ -168,6 +170,11 @@ final class AppPrefs {
     static void setMobileSaver(Context c, boolean enabled) {
         prefs(c).edit().putBoolean(KEY_MOBILE_SAVER, enabled).apply();
     }
+
+    static boolean getChipEnabled(Context c) { return prefs(c).getBoolean(KEY_CHIP_ENABLED, true); }
+    static void setChipEnabled(Context c, boolean enabled) { prefs(c).edit().putBoolean(KEY_CHIP_ENABLED, enabled).apply(); }
+    static boolean getChipOnly(Context c) { return prefs(c).getBoolean(KEY_CHIP_ONLY, false); }
+    static void setChipOnly(Context c, boolean enabled) { prefs(c).edit().putBoolean(KEY_CHIP_ONLY, enabled).apply(); }
 
     private static String normalize(String s) {
         if (s == null) return "";
