@@ -439,9 +439,8 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         long now = SystemClock.elapsedRealtime();
         if (screenOn && now - lastChipAttemptMs >= CHIP_UPDATE_MIN_MS
                 && AppPrefs.getChipEnabled(this) && symbol.equals(AppPrefs.getCollapsedSymbol(this))) {
-                lastChipAttemptMs = now;
-                ui.post(() -> refreshChipNotification(false));
-            }
+            lastChipAttemptMs = now;
+            ui.post(() -> refreshChipNotification(false));
         }
         if (AppPrefs.getPowerMode(this) == AppPrefs.POWER_ULTRA && screenOn && !ultraSleeping && !ultraRenderPending) {
             ultraRenderPending = true;
