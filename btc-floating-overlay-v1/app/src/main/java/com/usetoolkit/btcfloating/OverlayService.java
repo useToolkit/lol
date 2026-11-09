@@ -436,9 +436,9 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         synchronized (quotes) {
             quotes.put(symbol, new Quote(price, changePct));
         }
-        if (screenOn && AppPrefs.getChipEnabled(this) && symbol.equals(AppPrefs.getCollapsedSymbol(this))) {
-            long now = SystemClock.elapsedRealtime();
-            if (now - lastChipAttemptMs >= CHIP_UPDATE_MIN_MS) {
+        long now = SystemClock.elapsedRealtime();
+        if (screenOn && now - lastChipAttemptMs >= CHIP_UPDATE_MIN_MS
+                && AppPrefs.getChipEnabled(this) && symbol.equals(AppPrefs.getCollapsedSymbol(this))) {
                 lastChipAttemptMs = now;
                 ui.post(() -> refreshChipNotification(false));
             }
