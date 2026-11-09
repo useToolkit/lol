@@ -683,8 +683,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
                 .setCategory(Notification.CATEGORY_STATUS)
-                .setColorized(false)
-                .setSilent(true);
+                .setColorized(false);
         if (Build.VERSION.SDK_INT >= 36) {
             // Use platform methods where available; API 36.1 introduces the promotion setter.
             try {
