@@ -1,6 +1,11 @@
 package com.usetoolkit.btcfloating;
 
 import android.content.Intent;
+import android.app.Notification;
+import android.app.NotificationManager;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.service.notification.StatusBarNotification;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -29,6 +34,7 @@ public class SafeMainActivity extends MainActivity {
     private TextView powerSummary;
     private Button chipEnabledButton;
     private Button chipOnlyButton;
+    private TextView chipDiagnostics;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -41,6 +47,7 @@ public class SafeMainActivity extends MainActivity {
         super.onResume();
         updatePowerUi();
         updateChipUi();
+        updateChipDiagnostics();
     }
 
     private void applySafeInsets() {
@@ -113,7 +120,36 @@ public class SafeMainActivity extends MainActivity {
         settingsLp.topMargin = dp(8);
         card.addView(notificationSettings, settingsLp);
 
-        TextView caution = text("숫자 예시: 76.5K · 칩은 96dp 이하, 가격 알림 갱신은 최대 15초마다. 시스템이 거절하면 일반 Wantview 알림으로 남습니다.", 11, false);
+        Button promotedSettings = button("실시간 알림 칩 권한 설정 열기", false);
+        promotedSettings.setOnClickListener(v -> {
+            if (Build.VERSION.SDK_INT < 36) {
+                android.widget.Toast.makeText(this, "Android 16 이상에서 지원되는 설정입니다.", android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            try {
+                Intent intent = new Intent("android.settings.APP_NOTIFICATION_PROMOTION_SETTINGS");
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                startActivity(intent);
+            } catch (Exception ex) {
+                android.widget.Toast.makeText(this, "이 기기는 실시간 알림 별도 설정 화면을 제공하지 않습니다.", android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
+        LinearLayout.LayoutParams promoteLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+        promoteLp.topMargin = dp(8);
+        card.addView(promotedSettings, promoteLp);
+
+        chipDiagnostics = text("", 12, false);
+        chipDiagnostics.setTextColor(Color.rgb(205, 217, 229));
+        chipDiagnostics.setPadding(0, dp(10), 0, dp(6));
+        card.addView(chipDiagnostics);
+
+        Button inspect = button("알림 상태 다시 검사", false);
+        inspect.setOnClickListener(v -> updateChipDiagnostics());
+        card.addView(inspect, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(42)));
+
+        TextView caution = text("상태표시줄 가격 칩은 시스템이 승인한 알림만 표시됩니다. 금융 시세는 칩 승격이 제한될 수 있으며 일반 알림창 시세는 별도로 확인 가능합니다.", 11, false);
         caution.setTextColor(MUTED);
         caution.setPadding(0, dp(10), 0, 0);
         card.addView(caution);
@@ -123,6 +159,7 @@ public class SafeMainActivity extends MainActivity {
         cardLp.bottomMargin = dp(12);
         root.addView(card, Math.min(2, root.getChildCount()), cardLp);
         updateChipUi();
+        updateChipDiagnostics();
     }
 
     private void updateChipUi() {
@@ -135,6 +172,52 @@ public class SafeMainActivity extends MainActivity {
                 enabled ? Color.rgb(44, 112, 85) : Color.rgb(56, 73, 98), 11));
         chipOnlyButton.setBackground(roundRect(only ? Color.rgb(19, 117, 237) : CARD_2,
                 only ? ACCENT : Color.rgb(56, 73, 98), 11));
+    }
+
+    private void updateChipDiagnostics() {
+        if (chipDiagnostics == null) return;
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        boolean granted = Build.VERSION.SDK_INT < 33 ||
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        boolean notificationsEnabled = nm != null && nm.areNotificationsEnabled();
+        String promotedAllowed = Build.VERSION.SDK_INT < 36 ? "미지원 (Android 16 필요)" : "확인 불가";
+        if (Build.VERSION.SDK_INT >= 36 && nm != null) {
+            try {
+                Object value = nm.getClass().getMethod("canPostPromotedNotifications").invoke(nm);
+                promotedAllowed = Boolean.TRUE.equals(value) ? "시스템 허용" : "차단 / 미허용";
+            } catch (Exception ignored) { promotedAllowed = "기기에서 조회 불가"; }
+        }
+        boolean posted = false;
+        String promotable = "알림 미게시";
+        String promoted = "알림 미게시";
+        if (nm != null) {
+            try {
+                for (StatusBarNotification sbn : nm.getActiveNotifications()) {
+                    if (sbn.getId() == 102) {
+                        posted = true;
+                        Notification notification = sbn.getNotification();
+                        promotable = "시스템 진단 불가";
+                        if (Build.VERSION.SDK_INT >= 36) {
+                            try {
+                                Object result = Notification.class.getMethod("hasPromotableCharacteristics").invoke(notification);
+                                promotable = Boolean.TRUE.equals(result) ? "조건 충족" : "조건 미충족";
+                            } catch (Exception ignored) { }
+                        }
+                        promoted = "확인 불가";
+                        try {
+                            int flag = Notification.class.getField("FLAG_PROMOTED_ONGOING").getInt(null);
+                            promoted = (notification.flags & flag) != 0 ? "승격됨" : "승격되지 않음";
+                        } catch (Exception ignored) { }
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        chipDiagnostics.setText("Android API " + Build.VERSION.SDK_INT
+                + "\n일반 알림 권한: " + (granted && notificationsEnabled ? "정상" : "차단됨")
+                + "\n실시간 알림 권한: " + promotedAllowed
+                + "\n가격 알림 게시: " + (posted ? "확인됨" : "확인 안 됨")
+                + "\n승격 형식: " + promotable
+                + "\n실제 승격 상태: " + promoted);
     }
 
     private void broadcastChipChange() {
