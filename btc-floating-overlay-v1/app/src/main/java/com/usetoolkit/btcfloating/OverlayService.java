@@ -21,6 +21,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -40,6 +41,9 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     public static final String ACTION_CONFIG_CHANGED = "com.usetoolkit.btcfloating.CONFIG_CHANGED";
     public static final String EXTRA_RECONNECT = "reconnect";
     private static final String CHANNEL = "wantview_float_channel";
+    private static final long CHIP_UPDATE_MIN_MS = 15000L;
+    private volatile long lastChipAttemptMs;
+    private String lastChipLabel = "";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Map<String, Quote> quotes = new LinkedHashMap<>();
@@ -117,8 +121,10 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     private final BroadcastReceiver configReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             collapsed = AppPrefs.getCollapsed(OverlayService.this);
+            syncOverlayVisibility();
             applyDisplayPrefs();
             renderQuotes();
+            refreshChipNotification(true);
             if (intent != null && intent.getBooleanExtra(EXTRA_RECONNECT, false)) {
                 quotes.clear();
                 applyPowerPolicy();
@@ -144,22 +150,37 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         collapsed = AppPrefs.getCollapsed(this);
         networkType = NetworkUtil.getType(this);
         registerNetworkCallback();
-        createOverlay();
+        syncOverlayVisibility();
         applyPowerPolicy();
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         collapsed = AppPrefs.getCollapsed(this);
+        syncOverlayVisibility();
         applyDisplayPrefs();
+        refreshChipNotification(true);
         applyPowerPolicy();
         return START_STICKY;
     }
 
-    private void createOverlay() {
-        if (!Settings.canDrawOverlays(this)) {
-            stopSelf();
-            return;
+    private void syncOverlayVisibility() {
+        boolean wantOverlay = !AppPrefs.getChipOnly(this) && Settings.canDrawOverlays(this);
+        if (!wantOverlay && panel != null) {
+            try { wm.removeView(panel); } catch (Exception ignored) { }
+            panel = null;
+            header = null;
+            headerText = null;
+            toggle = null;
+            status = null;
+            quoteBox = null;
+            params = null;
+        } else if (wantOverlay && panel == null) {
+            createOverlay();
         }
+    }
+
+    private void createOverlay() {
+        if (!Settings.canDrawOverlays(this)) return;
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
 
         panel = new LinearLayout(this);
@@ -415,6 +436,13 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         synchronized (quotes) {
             quotes.put(symbol, new Quote(price, changePct));
         }
+        if (screenOn && AppPrefs.getChipEnabled(this) && symbol.equals(AppPrefs.getCollapsedSymbol(this))) {
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastChipAttemptMs >= CHIP_UPDATE_MIN_MS) {
+                lastChipAttemptMs = now;
+                ui.post(() -> refreshChipNotification(false));
+            }
+        }
         if (AppPrefs.getPowerMode(this) == AppPrefs.POWER_ULTRA && screenOn && !ultraSleeping && !ultraRenderPending) {
             ultraRenderPending = true;
             ui.postDelayed(() -> {
@@ -618,16 +646,58 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         Intent i = new Intent(this, SafeMainActivity.class);
         PendingIntent pi = PendingIntent.getActivity(this, 0, i,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+        String symbol = AppPrefs.getCollapsedSymbol(this);
+        String name = symbol.isEmpty() ? "BTC" : prettySymbol(symbol);
+        Quote quote;
+        synchronized (quotes) { quote = quotes.get(symbol); }
+        String price = quote == null ? "시세 연결 중" : formatPrice(quote.price);
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL)
                 : new Notification.Builder(this);
-        return b.setContentTitle("Wantview")
-                .setContentText("플로팅 시세 표시 중")
+        b.setContentTitle("Wantview · " + name)
+                .setContentText(name + "  " + price)
                 .setSmallIcon(R.drawable.ic_stat_wantview)
                 .setContentIntent(pi)
                 .setOngoing(true)
-                .setCategory(Notification.CATEGORY_SERVICE)
-                .build();
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setCategory(Notification.CATEGORY_SERVICE);
+
+        // Android 16/16 QPR promoted ongoing notifications are system-controlled.
+        // The platform may decline financial tickers even when all requested fields fit.
+        if (Build.VERSION.SDK_INT >= 36 && AppPrefs.getChipEnabled(this)) {
+            b.getExtras().putBoolean("android.requestPromotedOngoing", true);
+            if (quote != null) {
+                b.getExtras().putString("android.shortCriticalText", shortChipPrice(quote.price));
+            }
+        }
+        return b.build();
+    }
+
+    private static String shortChipPrice(double price) {
+        double abs = Math.abs(price);
+        if (abs >= 1000000000d) return String.format(Locale.US, "%.1fB", price / 1000000000d);
+        if (abs >= 1000000d) return String.format(Locale.US, "%.1fM", price / 1000000d);
+        if (abs >= 1000d) return String.format(Locale.US, "%.1fK", price / 1000d);
+        if (abs >= 100d) return String.format(Locale.US, "%.1f", price);
+        if (abs >= 1d) return String.format(Locale.US, "%.2f", price);
+        return String.format(Locale.US, "%.3f", price);
+    }
+
+    private void refreshChipNotification(boolean force) {
+        if (!force && (!screenOn || !AppPrefs.getChipEnabled(this))) return;
+        String symbol = AppPrefs.getCollapsedSymbol(this);
+        Quote quote;
+        synchronized (quotes) { quote = quotes.get(symbol); }
+        if (quote == null && !force) return;
+        String label = quote == null ? "" : symbol + ":" + shortChipPrice(quote.price);
+        if (!force && label.equals(lastChipLabel)) return;
+        lastChipLabel = label;
+        try {
+            NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (manager != null) manager.notify(101, buildNotification());
+        } catch (Exception ignored) { }
     }
 
     @Override public void onDestroy() {
