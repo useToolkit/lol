@@ -4,6 +4,8 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Build;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -25,16 +27,20 @@ public class SafeMainActivity extends MainActivity {
     private Button mobileSaverButton;
     private TextView networkState;
     private TextView powerSummary;
+    private Button chipEnabledButton;
+    private Button chipOnlyButton;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         applySafeInsets();
         installPowerControls();
+        installChipControls();
     }
 
     @Override protected void onResume() {
         super.onResume();
         updatePowerUi();
+        updateChipUi();
     }
 
     private void applySafeInsets() {
@@ -49,6 +55,93 @@ public class SafeMainActivity extends MainActivity {
             return insets;
         });
         content.requestApplyInsets();
+    }
+
+    private void installChipControls() {
+        LinearLayout root = findScrollRoot();
+        if (root == null) return;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        card.setBackground(roundRect(CARD, Color.rgb(37, 55, 79), 16));
+
+        TextView title = text("상태표시줄 가격 칩 · 실험", 17, true);
+        title.setTextColor(Color.rgb(126, 211, 255));
+        card.addView(title);
+
+        TextView note = text("갤럭시 S26 / Android 16에서 숫자 1개만 칩으로 요청합니다. 상태표시줄 노출 여부는 삼성 시스템이 결정하며, 금융 시세는 제한될 수 있습니다.", 12, false);
+        note.setTextColor(MUTED);
+        note.setPadding(0, dp(7), 0, dp(12));
+        card.addView(note);
+
+        chipEnabledButton = button("", true);
+        chipEnabledButton.setOnClickListener(v -> {
+            boolean next = !AppPrefs.getChipEnabled(this);
+            AppPrefs.setChipEnabled(this, next);
+            if (!next && AppPrefs.getChipOnly(this)) AppPrefs.setChipOnly(this, false);
+            updateChipUi();
+            broadcastChipChange();
+        });
+        card.addView(chipEnabledButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+
+        chipOnlyButton = button("", false);
+        chipOnlyButton.setOnClickListener(v -> {
+            boolean next = !AppPrefs.getChipOnly(this);
+            AppPrefs.setChipOnly(this, next);
+            if (next) AppPrefs.setChipEnabled(this, true);
+            updateChipUi();
+            broadcastChipChange();
+        });
+        LinearLayout.LayoutParams onlyLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(48));
+        onlyLp.topMargin = dp(8);
+        card.addView(chipOnlyButton, onlyLp);
+
+        Button notificationSettings = button("갤럭시 알림 설정 열기", false);
+        notificationSettings.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                startActivity(intent);
+            } catch (Exception ex) {
+                android.widget.Toast.makeText(this, "설정 → 알림 → Wantview를 확인하세요.", android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
+        LinearLayout.LayoutParams settingsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
+        settingsLp.topMargin = dp(8);
+        card.addView(notificationSettings, settingsLp);
+
+        TextView caution = text("숫자 예시: 76.5K · 칩은 96dp 이하, 가격 알림 갱신은 최대 15초마다. 시스템이 거절하면 일반 Wantview 알림으로 남습니다.", 11, false);
+        caution.setTextColor(MUTED);
+        caution.setPadding(0, dp(10), 0, 0);
+        card.addView(caution);
+
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.bottomMargin = dp(12);
+        root.addView(card, Math.min(2, root.getChildCount()), cardLp);
+        updateChipUi();
+    }
+
+    private void updateChipUi() {
+        if (chipEnabledButton == null || chipOnlyButton == null) return;
+        boolean enabled = AppPrefs.getChipEnabled(this);
+        boolean only = AppPrefs.getChipOnly(this);
+        chipEnabledButton.setText("상태표시줄 가격 칩 요청  " + (enabled ? "ON" : "OFF"));
+        chipOnlyButton.setText("플로팅 숨기고 알림만 사용  " + (only ? "ON" : "OFF"));
+        chipEnabledButton.setBackground(roundRect(enabled ? Color.rgb(16, 57, 46) : CARD_2,
+                enabled ? Color.rgb(44, 112, 85) : Color.rgb(56, 73, 98), 11));
+        chipOnlyButton.setBackground(roundRect(only ? Color.rgb(19, 117, 237) : CARD_2,
+                only ? ACCENT : Color.rgb(56, 73, 98), 11));
+    }
+
+    private void broadcastChipChange() {
+        Intent i = new Intent(OverlayService.ACTION_CONFIG_CHANGED);
+        i.setPackage(getPackageName());
+        i.putExtra(OverlayService.EXTRA_RECONNECT, false);
+        sendBroadcast(i);
     }
 
     private void installPowerControls() {
