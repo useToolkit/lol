@@ -532,7 +532,7 @@ public class MainActivity extends Activity {
     }
 
     private void startOverlay() {
-        if (!Settings.canDrawOverlays(this)) {
+        if (!AppPrefs.getChipOnly(this) && !Settings.canDrawOverlays(this)) {
             openOverlayPermissionIfNeeded();
             Toast.makeText(this, "'다른 앱 위에 표시'를 허용한 뒤 다시 눌러주세요.", Toast.LENGTH_LONG).show();
             return;
