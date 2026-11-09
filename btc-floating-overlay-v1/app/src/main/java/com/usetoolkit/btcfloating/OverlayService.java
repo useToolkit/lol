@@ -41,6 +41,8 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     public static final String ACTION_CONFIG_CHANGED = "com.usetoolkit.btcfloating.CONFIG_CHANGED";
     public static final String EXTRA_RECONNECT = "reconnect";
     private static final String CHANNEL = "wantview_float_channel";
+    private static final String PRICE_CHANNEL = "wantview_price_status_v2";
+    private static final int PRICE_NOTIFICATION_ID = 102;
     private static final long CHIP_UPDATE_MIN_MS = 15000L;
     private volatile long lastChipAttemptMs;
     private String lastChipLabel = "";
@@ -152,6 +154,7 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         registerNetworkCallback();
         syncOverlayVisibility();
         applyPowerPolicy();
+        refreshChipNotification(true);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -634,41 +637,67 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     }
 
     private void createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel c = new NotificationChannel(CHANNEL, "Wantview Floating", NotificationManager.IMPORTANCE_LOW);
-            c.setSound(null, null);
-            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);
-        }
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        NotificationChannel service = new NotificationChannel(
+                CHANNEL, "Wantview 플로팅 서비스", NotificationManager.IMPORTANCE_LOW);
+        service.setSound(null, null);
+        nm.createNotificationChannel(service);
+        // Dedicated channel: Samsung may hide an FGS in the silent/active apps section.
+        NotificationChannel price = new NotificationChannel(
+                PRICE_CHANNEL, "Wantview 시세 알림", NotificationManager.IMPORTANCE_DEFAULT);
+        price.setSound(null, null);
+        price.enableVibration(false);
+        price.setShowBadge(false);
+        nm.createNotificationChannel(price);
     }
 
     private Notification buildNotification() {
         Intent i = new Intent(this, SafeMainActivity.class);
         PendingIntent pi = PendingIntent.getActivity(this, 0, i,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        return new Notification.Builder(this, CHANNEL)
+                .setContentTitle("Wantview")
+                .setContentText("시세 확인 중")
+                .setSmallIcon(R.drawable.ic_stat_wantview)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build();
+    }
 
-        String symbol = AppPrefs.getCollapsedSymbol(this);
-        String name = symbol.isEmpty() ? "BTC" : prettySymbol(symbol);
-        Quote quote;
-        synchronized (quotes) { quote = quotes.get(symbol); }
+    private Notification buildPriceNotification(String name, Quote quote) {
+        Intent i = new Intent(this, SafeMainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(this, 1, i,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        String number = quote == null ? "연결 중" : shortChipPrice(quote.price);
         String price = quote == null ? "시세 연결 중" : formatPrice(quote.price);
-        Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL)
-                : new Notification.Builder(this);
-        b.setContentTitle("Wantview · " + name)
+        Notification.Builder b = new Notification.Builder(this, PRICE_CHANNEL)
+                .setContentTitle("Wantview · " + name)
                 .setContentText(name + "  " + price)
                 .setSmallIcon(R.drawable.ic_stat_wantview)
                 .setContentIntent(pi)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setShowWhen(false)
-                .setCategory(Notification.CATEGORY_SERVICE);
-
-        // Android 16/16 QPR promoted ongoing notifications are system-controlled.
-        // The platform may decline financial tickers even when all requested fields fit.
-        if (Build.VERSION.SDK_INT >= 36 && AppPrefs.getChipEnabled(this)) {
-            b.getExtras().putBoolean("android.requestPromotedOngoing", true);
-            if (quote != null) {
-                b.getExtras().putString("android.shortCriticalText", shortChipPrice(quote.price));
+                .setCategory(Notification.CATEGORY_STATUS)
+                .setColorized(false)
+                .setSilent(true);
+        if (Build.VERSION.SDK_INT >= 36) {
+            // Use platform methods where available; API 36.1 introduces the promotion setter.
+            try {
+                Notification.Builder.class.getMethod("setRequestPromotedOngoing", boolean.class)
+                        .invoke(b, true);
+            } catch (Exception ignored) {
+                b.getExtras().putBoolean("android.requestPromotedOngoing", true);
+            }
+            try {
+                Notification.Builder.class.getMethod("setShortCriticalText", String.class)
+                        .invoke(b, number);
+            } catch (Exception ignored) {
+                b.getExtras().putString("android.shortCriticalText", number);
             }
         }
         return b.build();
@@ -685,7 +714,14 @@ public class OverlayService extends Service implements MarketSocket.Listener {
     }
 
     private void refreshChipNotification(boolean force) {
-        if (!force && (!screenOn || !AppPrefs.getChipEnabled(this))) return;
+        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        if (!AppPrefs.getChipEnabled(this)) {
+            manager.cancel(PRICE_NOTIFICATION_ID);
+            lastChipLabel = "";
+            return;
+        }
+        if (!force && !screenOn) return;
         String symbol = AppPrefs.getCollapsedSymbol(this);
         Quote quote;
         synchronized (quotes) { quote = quotes.get(symbol); }
@@ -694,8 +730,8 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         if (!force && label.equals(lastChipLabel)) return;
         lastChipLabel = label;
         try {
-            NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (manager != null) manager.notify(101, buildNotification());
+            String name = symbol.isEmpty() ? "BTC" : prettySymbol(symbol);
+            manager.notify(PRICE_NOTIFICATION_ID, buildPriceNotification(name, quote));
         } catch (Exception ignored) { }
     }
 
@@ -704,6 +740,10 @@ public class OverlayService extends Service implements MarketSocket.Listener {
         stopUltra();
         ui.removeCallbacksAndMessages(null);
         if (market != null) market.disconnect();
+        try {
+            NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (manager != null) manager.cancel(PRICE_NOTIFICATION_ID);
+        } catch (Exception ignored) { }
         try { unregisterReceiver(screenReceiver); } catch (Exception ignored) { }
         try { unregisterReceiver(configReceiver); } catch (Exception ignored) { }
         try { if (cm != null && networkCallback != null) cm.unregisterNetworkCallback(networkCallback); } catch (Exception ignored) { }
