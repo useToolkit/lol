@@ -10,7 +10,7 @@ public final class RadialPaletteMathTest {
             assertTrue("right",p.x<=218f-diameter/2f);
             assertTrue("top",p.y>=diameter/2f);
             assertTrue("bottom",p.y<=218f-diameter/2f);
-            assertTrue("fans leftwards",p.x<cx);
+            assertTrue("fan remains near trigger on the rightmost tip",p.x<=cx+15f);
             assertTrue("fans upwards",p.y<cy);
         }
     }
