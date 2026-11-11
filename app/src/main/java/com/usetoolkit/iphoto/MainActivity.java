@@ -242,10 +242,10 @@ public final class MainActivity extends ComponentActivity {
     private TextView filterShortcut;
     private FrameLayout filterPalettePanel;
     private boolean filterPaletteVisible = false;
-    private static final int PALETTE_SIZE_DP=170;
-    private static final int PALETTE_ANCHOR_X_DP=143;
-    private static final int PALETTE_ANCHOR_Y_DP=145;
-    private static final int PALETTE_RADIUS_DP=115;
+    private static final int PALETTE_SIZE_DP=218;
+    private static final int PALETTE_ANCHOR_X_DP=173;
+    private static final int PALETTE_ANCHOR_Y_DP=168;
+    private static final int PALETTE_RADIUS_DP=143;
     private SeekBar strengthSeek, exposureSeek;
     private GridOverlay grid;
     private long startedAt;
@@ -1395,6 +1395,7 @@ public final class MainActivity extends ComponentActivity {
         if(look==ColorLooks.Look.SOFT)return "Soft";
         if(look==ColorLooks.Look.CINEMA)return "Noir";
         if(look==ColorLooks.Look.CANON50)return "Canon";
+        if(look==ColorLooks.Look.SI)return "si";
         return "원본";
     }
 
@@ -1404,6 +1405,7 @@ public final class MainActivity extends ComponentActivity {
             case SOFT: return new int[]{0xFFB8A595,0xFFFFE5D3};
             case CINEMA: return new int[]{0xFF25394A,0xFF7295A5};
             case CANON50: return new int[]{0xFF9C5C41,0xFFF2C49D};
+            case SI: return new int[]{0xFF524C44,0xFFC8B9A4};
             default: return new int[]{0xFF565B61,0xFFC7C9C9};
         }
     }
@@ -1413,6 +1415,7 @@ public final class MainActivity extends ComponentActivity {
         if(look==ColorLooks.Look.SOFT)return "S";
         if(look==ColorLooks.Look.CINEMA)return "N";
         if(look==ColorLooks.Look.CANON50)return "C";
+        if(look==ColorLooks.Look.SI)return "si";
         return "O";
     }
 
@@ -1480,8 +1483,8 @@ public final class MainActivity extends ComponentActivity {
     }
 
     /**
-     * Single-arc palette. Five 42dp circles move from the existing
-     * bottom-right 42dp trigger to positions on a short upper-left fan.
+     * Single-arc palette. Six 42dp circles move from the existing
+     * bottom-right 42dp trigger to positions on a compact upper-left fan.
      * No list, captions, fullscreen dim or zoom/shutter layout shifts.
      */
     private void openFilterPalette(){

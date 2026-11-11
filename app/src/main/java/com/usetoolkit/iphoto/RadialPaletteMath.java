@@ -1,10 +1,10 @@
 package com.usetoolkit.iphoto;
 
-/** Pure geometry for a small bottom-right, upper-left fan of five filters. */
+/** Pure geometry for a compact bottom-right, upper-left fan of six filters. */
 public final class RadialPaletteMath {
-    public static final int COUNT=5;
-    private static final double FIRST_ANGLE_DEG=184d;
-    private static final double STEP_DEG=21d;
+    public static final int COUNT=6;
+    private static final double FIRST_ANGLE_DEG=185d;
+    private static final double STEP_DEG=18d;
     private RadialPaletteMath(){}
     public static final class Point {
         public final float x,y;

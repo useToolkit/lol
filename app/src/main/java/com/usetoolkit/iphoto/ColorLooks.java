@@ -17,6 +17,7 @@ public final class ColorLooks {
         SOFT("Soft Hotel", "부드러운 조명 · 자연스러운 피부"),
         CINEMA("City Noir", "차가운 야경 · 깊은 대비"),
         CANON50("Canon R5 II · 50mm", "자연스러운 피부톤 · 부드러운 하이라이트"),
+        SI("si", "파리지앵 뮤트 · 앰버 조명 · 차분한 베이지"),
         ORIGINAL("Original", "효과 없는 원본");
         public final String label;
         public final String hint;
@@ -63,6 +64,7 @@ public final class ColorLooks {
     private static float[] grade(Look look, float r, float g, float b) {
         if (look == Look.ORIGINAL) return new float[] {r, g, b};
         if (look == Look.CANON50) return gradeCanon50(r, g, b);
+        if (look == Look.SI) return SiLook.grade(r, g, b);
 
         // Linear-domain luminance approximation; Media3's SDR input is linear BT.709.
         float lum = clip(.2126f * r + .7152f * g + .0722f * b, 0, 1);
