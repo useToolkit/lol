@@ -57,7 +57,7 @@ public final class SiLook {
         return Math.min(x,Math.min(y,z));
     }
     private static float tone(float value){
-        float x=clip((value-.5f)*1.075f+.5f);
+        float x=(value-.5f)*1.075f+.5f;
         float shadow=1f-smooth(.075f,.32f,x);
         float highlight=smooth(.57f,.96f,x);
         float mid=smooth(.10f,.36f,x)*(1f-smooth(.60f,.85f,x));
