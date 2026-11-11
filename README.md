@@ -1,5 +1,16 @@
 # I photo — 갤럭시 전용 시네마틱 카메라
 
+## v2.2.7-si2 — visibly stronger si color and MAX→LOOK bug fix
+- The first SI preset was only a subtle grading and could be difficult to distinguish from Original.
+- When changing photo quality from MAX to LOOK after selecting a creative filter, the old version re-bound CameraX WITHOUT calling applyLook(), so Media3 could retain the previous LUT. This is fixed: update the LUT before rebind.
+- If si is already selected but MAX is active, tapping si again now enters the LOOK filtered capture path.
+- MAX original capture does NOT save filters in v2.2.7. The top status indicates when si is selected but excluded from saved photo.
+- si2 intensifies amber hotel lighting, warm champagne stone, olive foliage, reduced blues, slightly darker cinematic contrast and soft highlight shoulder. Other look formulas remain unchanged.
+- Automated tests verify monotonic tone, bounded RGB and specific visible chroma changes. Tests and signed release build do not prove actual Galaxy saved-photo rendering; compare captured photo files on device.
+- Source remains on the v2.2.7 stable branch with unchanged zoom, AF/AE and video controls.
+- [I photo v2.2.7-si2 APK](https://raw.githubusercontent.com/useToolkit/lol/i-photo-apk/I-photo-v2.2.7-si2-release.apk)
+
+
 ## v2.2.7-si — 사진 5장 기반 신규 'si' 필터
 
 - **v2.2.7 원본 코드**(878c45bb500d816aebf58c252bfe9d456fa30852)를 기준으로 작업했습니다. v2.2.8/2.2.9의 고화소 시도 및 후처리 변경은 포함하지 않습니다.

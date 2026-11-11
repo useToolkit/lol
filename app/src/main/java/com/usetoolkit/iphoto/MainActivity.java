@@ -1553,7 +1553,10 @@ public final class MainActivity extends ComponentActivity {
             option.setScaleX(.45f);
             option.setScaleY(.45f);
             option.setOnClickListener(v->{
-                if(selected!=look)selectLook(look);
+                // Retapping si in MAX must enable the filtered LOOK path.
+                if(selected!=look || (look==ColorLooks.Look.SI &&
+                        !isVideo && photoQualityMode.equals("MAX")))
+                    selectLook(look);
                 dismissFilterPalette();
             });
             option.animate().translationX(0f).translationY(0f)
@@ -1609,7 +1612,10 @@ public final class MainActivity extends ComponentActivity {
             photoQualityMode="LOOK";
             photoHighResolutionFallback=false;
             getPreferences(MODE_PRIVATE).edit().putString("photo_quality_mode","LOOK").apply();
-            showMessage("색감 필터 사진 모드로 전환 · 최고 화소 원본은 설정에서 선택");
+            // Previous si build missed this call, leaving the prior LUT active.
+            // Update Media3 effects BEFORE re-binding with LOOK output.
+            applyLook();
+            showMessage("색감 필터 적용 · LOOK 촬영으로 전환");
             if(cameraProvider!=null)bindCameraUseCases();
         }else{
             applyLook();
@@ -1637,7 +1643,9 @@ public final class MainActivity extends ComponentActivity {
         String qualityInfo=isVideo?(" · "+effectiveVideoQuality+" "+
             effectiveVideoFps+"fps"+(effectiveStabilization?" · STAB":"")):"";
         String photoQuality=!isVideo&&!portraitBokehActive?
-            (photoQualityMode.equals("MAX")?" · MAX 원본":" · LOOK 고화질"):"";
+            (photoQualityMode.equals("MAX")?
+                 (selected==ColorLooks.Look.SI?" · MAX 원본 · si 미적용":" · MAX 원본"):
+                 " · LOOK 고화질"):"";
         info.setText(currentLabel + " · " + frameRatio +
             (filterFallback?" · 필터 중단":"") +
             (portraitBokehActive?" · 제조사 보케":"") +
